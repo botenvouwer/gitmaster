@@ -26,8 +26,9 @@ repo on that PR, `m` mine/all, `o` open in browser, `r` reload.
 
 Live status: your work in the repos in scope over the last 12h, 24h or 3d
 (`1`, `2`, `3`; the windows are `liveWindowsHours` in the config): open work
-per repo, your commits not in a pull request, your open PRs and your PRs
-closed in that window. `enter` opens the repo at that item, `o` opens a
+per repo, your local commits that are not pushed, your pushed commits that
+are not in a pull request, your open PRs and your PRs closed in that
+window. `enter` opens the repo at that item, `o` opens a
 commit or PR in the browser.
 
 The chosen view (repos, pull requests or live status), the live window, the

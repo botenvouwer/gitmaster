@@ -898,7 +898,7 @@ func (d *detailView) commitChange(c git.Commit) *change {
 	}
 	return &change{
 		key: c.SHA, label: c.Short,
-		url: func() (string, error) { return commitURL(dir, c) },
+		url:   func() (string, error) { return commitURL(dir, c) },
 		files: func() ([]git.ChangedFile, error) { return git.CommitFiles(dir, c.SHA) },
 		fileText: func(f git.ChangedFile, full bool) (string, error) {
 			out, err := git.CommitFileDiff(dir, c.SHA, f, full)

@@ -637,7 +637,7 @@ func (m *masterView) rebuildLive() {
 	}
 
 	// Gather.
-	var work, commits, open, closed []liveRef
+	var work, local, pushed, open, closed []liveRef
 	loading, failed := 0, 0
 	for _, r := range repos {
 		if r.liveLoading || r.prLoading {
@@ -663,12 +663,22 @@ func (m *masterView) rebuildLive() {
 			}
 		}
 		for _, c := range r.myCommits {
-			if !c.When.Before(since) && !heads[c.Branch] && !c.OnBase {
-				commits = append(commits, liveRef{kind: liveCommit, repo: r, key: c.SHA, commit: c})
+			if c.When.Before(since) || heads[c.Branch] || c.OnBase {
+				continue
+			}
+			ref := liveRef{kind: liveCommit, repo: r, key: c.SHA, commit: c}
+			if c.Unpushed {
+				local = append(local, ref)
+			} else {
+				pushed = append(pushed, ref)
 			}
 		}
 	}
-	sort.SliceStable(commits, func(i, j int) bool { return commits[i].commit.When.After(commits[j].commit.When) })
+	byTime := func(refs []liveRef) {
+		sort.SliceStable(refs, func(i, j int) bool { return refs[i].commit.When.After(refs[j].commit.When) })
+	}
+	byTime(local)
+	byTime(pushed)
 	sort.SliceStable(open, func(i, j int) bool { return open[i].pr.Updated.After(open[j].pr.Updated) })
 	sort.SliceStable(closed, func(i, j int) bool { return closed[i].pr.Closed.After(closed[j].pr.Closed) })
 
@@ -705,7 +715,8 @@ func (m *masterView) rebuildLive() {
 		}
 	}
 	section("OPEN WORK", work)
-	section("COMMITS NOT IN A PULL REQUEST", commits)
+	section("LOCAL COMMITS (NOT PUSHED)", local)
+	section("PUSHED COMMITS (NOT IN A PULL REQUEST)", pushed)
 	section("OPEN PULL REQUESTS", open)
 	section("CLOSED PULL REQUESTS", closed)
 
