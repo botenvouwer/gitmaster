@@ -23,14 +23,18 @@ repo to a project, `x` remove from the current project, `r` rescan.
 Pull-request overview: all open PRs of the repos in scope; `enter` opens the
 repo on that PR, `m` mine/all, `o` open in browser, `r` reload.
 
-The chosen view (repos or pull requests), the repo-screen mode and the PR
-mine/all filter are remembered across screens and restarts.
+The chosen view (repos or pull requests), the repo-screen mode, the layout
+and the PR mine/all filter are remembered across screens and restarts.
 
 Project repos: `space`/`enter` toggle a repo, `esc` done.
 
 Repo: `w` open work, `c` commits, `p` pull requests, `←`/`→` switch pane,
 `d` toggle content/diff (open work), diff/full file (commits), details/diff
-(PRs), `m` mine/all PRs, `o` open PR in browser.
+(PRs), `m` mine/all PRs, `o` open PR in browser, `enter` on a commit or PR
+opens its files with a per-file diff, `v` cycles the layout: default
+(list | content), files first (list | files | content) or content first
+(list | content | files, the content shows the message while the list is
+focused and the file once the files pane is).
 
 Everywhere: `↑`/`↓` one line, `shift+↑/↓` or `J`/`K` five lines, mouse wheel
 scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.

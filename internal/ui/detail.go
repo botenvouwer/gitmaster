@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -19,6 +20,7 @@ const (
 	modeWork mode = iota
 	modeCommits
 	modePRs
+	modeChange // the files of one commit or pull request (pushed with Enter)
 )
 
 func (m mode) String() string {
@@ -27,6 +29,8 @@ func (m mode) String() string {
 		return "commits"
 	case modePRs:
 		return "pull requests"
+	case modeChange:
+		return "change"
 	}
 	return "open work"
 }
@@ -41,100 +45,202 @@ func parseMode(s string) mode {
 	return modeWork
 }
 
+// layout is how commits and pull requests are laid out on the repo screen.
+type layout int
+
+const (
+	layoutDefault      layout = iota // list | content; Enter opens the change's files
+	layoutFilesFirst                 // list | files | content
+	layoutContentFirst               // list | content (65%) | files
+)
+
+func (l layout) String() string {
+	switch l {
+	case layoutFilesFirst:
+		return "files first"
+	case layoutContentFirst:
+		return "content first"
+	}
+	return "default"
+}
+
+func parseLayout(s string) layout {
+	switch s {
+	case "files first":
+		return layoutFilesFirst
+	case "content first":
+		return layoutContentFirst
+	}
+	return layoutDefault
+}
+
+type pane int
+
+const (
+	paneList pane = iota
+	paneFiles
+	paneContent
+)
+
 const commitLimit = 500
 
-// detailView shows one repo with a list on the left and content on the right.
+// change is a commit or a pull request seen as a set of file changes.
+type change struct {
+	key, label string
+	files      func() ([]git.ChangedFile, error)
+	fileText   func(f git.ChangedFile, full bool) (string, error)
+	message    func() (string, error) // header/message/stat (content-first, list focused)
+	primary    func() (string, error) // default layout content
+	alt        func() (string, error) // default layout content after d
+	labels     [2]string              // titles for primary / alt
+}
+
+// detailView shows one repo: a list on the left (open-work files, commits or
+// pull requests) and content on the right, optionally with a files pane for
+// the selected commit/PR.
 type detailView struct {
 	*tview.Flex
 	app    *App
 	repo   *repoEntry
 	mode   mode
-	left   *tview.Table
-	filter *filterBox
-	right  *tview.TextView
+	layout layout
+	fixed  *change // modeChange: the change whose files are listed
 
-	focusRight bool
-	showAlt    [3]bool // per mode: the alternate right-pane rendering (d toggles)
-	mineOnly   bool
-	openPR     int // select this pull request once the list is rendered
+	list    *tview.Table
+	filter  *filterBox
+	files   *tview.Table
+	content *tview.TextView
 
-	files       []git.File
+	order    []pane
+	focus    pane
+	msgMode  bool    // content-first: show the change's message (list focused last) instead of a file
+	showAlt  [4]bool // per mode: alternate content rendering (d toggles)
+	mineOnly bool
+	openPR   int // select this pull request once the list is rendered
+
+	workFiles   []git.File
 	commits     []git.Commit
 	renderedPRs int // repo.prGen that the PR list was last rendered from
 
+	cur        *change
+	curFiles   []git.ChangedFile
+	filesCache map[string][]git.ChangedFile
+	mu         sync.Mutex
+	prRefs     map[int][2]string
+
 	leftGen    int
+	filesGen   int
 	rightGen   int
 	rightTimer *time.Timer
 }
 
-func newDetail(a *App, r *repoEntry) *detailView {
-	d := &detailView{Flex: tview.NewFlex(), app: a, repo: r, mineOnly: a.ui().MineOnly(), mode: parseMode(a.ui().DetailView)}
-	d.showAlt[modeCommits] = false // commits: diff by default, alt = full file
-
-	d.left = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
-	d.left.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
-	d.left.SetSelectionChangedFunc(func(row, _ int) { d.scheduleRight() })
-	d.left.SetInputCapture(d.keys)
-	d.filter = newFilterBox(a, d.left, d.renderLeft)
-
-	d.right = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
-	d.right.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
-	d.right.SetInputCapture(d.keys)
-
-	d.AddItem(d.filter, 0, 2, true).AddItem(d.right, 0, 3, false)
-	d.setFocus(false)
+func newDetail(a *App, r *repoEntry, m mode) *detailView {
+	d := &detailView{
+		Flex: tview.NewFlex(), app: a, repo: r, mode: m,
+		layout:     parseLayout(a.ui().Layout),
+		mineOnly:   a.ui().MineOnly(),
+		filesCache: map[string][]git.ChangedFile{}, prRefs: map[int][2]string{},
+	}
+	d.build()
 	return d
 }
 
-func (d *detailView) crumbs() []string             { return []string{d.repo.name, d.mode.String()} }
+// newChangeView lists the files of one change with their content on the right.
+func newChangeView(a *App, r *repoEntry, ch *change) *detailView {
+	d := &detailView{
+		Flex: tview.NewFlex(), app: a, repo: r, mode: modeChange, fixed: ch,
+		filesCache: map[string][]git.ChangedFile{}, prRefs: map[int][2]string{},
+	}
+	d.build()
+	return d
+}
+
+func (d *detailView) build() {
+	d.list = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false)
+	d.list.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
+	d.list.SetSelectionChangedFunc(func(int, int) { d.onListChanged() })
+	d.list.SetInputCapture(d.keys)
+	d.list.SetFocusFunc(func() { d.onFocus(paneList) })
+	d.filter = newFilterBox(d.app, d.list, d.renderLeft)
+
+	d.files = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false)
+	d.files.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
+	d.files.SetSelectionChangedFunc(func(int, int) {
+		if d.threePane() && !(d.layout == layoutContentFirst && d.msgMode) {
+			d.scheduleRight()
+		}
+	})
+	d.files.SetInputCapture(d.keys)
+	d.files.SetFocusFunc(func() { d.onFocus(paneFiles) })
+
+	d.content = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
+	d.content.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
+	d.content.SetInputCapture(d.keys)
+	d.content.SetFocusFunc(func() { d.onFocus(paneContent) })
+
+	d.buildLayout()
+}
+
+// threePane reports whether the files pane is part of the layout.
+func (d *detailView) threePane() bool {
+	return (d.mode == modeCommits || d.mode == modePRs) && d.layout != layoutDefault
+}
+
+func (d *detailView) buildLayout() {
+	d.Clear()
+	switch {
+	case !d.threePane():
+		d.AddItem(d.filter, 0, 2, true).AddItem(d.content, 0, 3, false)
+		d.order = []pane{paneList, paneContent}
+	case d.layout == layoutFilesFirst:
+		d.AddItem(d.filter, 0, 1, true).AddItem(d.files, 0, 1, false).AddItem(d.content, 0, 2, false)
+		d.order = []pane{paneList, paneFiles, paneContent}
+	default:
+		d.AddItem(d.filter, 0, 7, true).AddItem(d.content, 0, 26, false).AddItem(d.files, 0, 7, false)
+		d.order = []pane{paneList, paneContent, paneFiles}
+	}
+	d.focus = paneList
+	d.msgMode = true
+	d.paintFocus()
+}
+
+func (d *detailView) crumbs() []string {
+	if d.mode == modeChange {
+		return []string{d.fixed.label}
+	}
+	return []string{d.repo.name, d.mode.String()}
+}
+
 func (d *detailView) escape() bool                 { return d.filter.clear() }
 func (d *detailView) refreshTargets() []*repoEntry { return []*repoEntry{d.repo} }
+func (d *detailView) focusTarget() tview.Primitive { return d.prim(d.focus) }
 
-// update picks up refreshed data: the header always, a freshly loaded PR
-// list, and in open-work mode the file list when it changed (keeping the
-// selected file).
-func (d *detailView) update() {
-	if d.mode == modePRs && d.repo.prLoaded && d.renderedPRs != d.repo.prGen {
-		d.renderPRs()
-		return
-	}
-	if d.mode != modeWork || d.repo.err != nil || sameFiles(d.files, d.repo.status.Files) {
-		return
-	}
-	selected := ""
-	if i := d.selectedIndex(); i >= 0 && i < len(d.files) {
-		selected = d.files[i].Path
-	}
-	d.files = d.repo.status.Files
-	d.renderFiles()
-	for row := 1; row < d.left.GetRowCount(); row++ {
-		if i, ok := d.left.GetCell(row, 0).GetReference().(int); ok && d.files[i].Path == selected {
-			d.left.Select(row, 0)
-			break
-		}
+// stop drops the pull-request refs fetched while browsing.
+func (d *detailView) stop() {
+	if len(d.prRefs) > 0 {
+		go git.CleanPRRefs(d.repo.path)
 	}
 }
 
-func sameFiles(a, b []git.File) bool {
-	if len(a) != len(b) {
-		return false
+func (d *detailView) prim(p pane) tview.Primitive {
+	switch p {
+	case paneFiles:
+		return d.files
+	case paneContent:
+		return d.content
 	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (d *detailView) focusTarget() tview.Primitive {
-	if d.focusRight {
-		return d.right
-	}
-	return d.left
+	return d.list
 }
 
 func (d *detailView) hotkeys() []hotkey {
+	if d.mode == modeChange {
+		return []hotkey{
+			{"d", "diff / full file"},
+			{"←/→", "switch pane"},
+			{"/", "filter"},
+			{"esc", "back"},
+		}
+	}
 	keys := []hotkey{
 		{"w", "open work"},
 		{"c", "commits"},
@@ -147,9 +253,10 @@ func (d *detailView) hotkeys() []hotkey {
 	case modeWork:
 		keys = append(keys, hotkey{"d", "content / diff"})
 	case modeCommits:
-		keys = append(keys, hotkey{"d", "diff / full file"})
+		keys = append(keys, hotkey{"enter", "files of commit"}, hotkey{"d", "diff / full file"}, hotkey{"v", "layout"})
 	case modePRs:
-		keys = append(keys, hotkey{"d", "details / diff"}, hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
+		keys = append(keys, hotkey{"enter", "files of PR"}, hotkey{"d", "details / diff"}, hotkey{"v", "layout"},
+			hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
 	}
 	return keys
 }
@@ -160,16 +267,25 @@ func (d *detailView) info() [][2]string {
 	if s.HasUpstream {
 		branch += " → " + s.Upstream
 	}
-	sync := fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind)
-	return [][2]string{
+	rows := [][2]string{
 		{"Repo", d.repo.name},
 		{"Branch", branch},
-		{"Sync", sync},
-		{"Path", shortenHome(d.repo.path)},
+		{"Sync", fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind)},
 	}
+	if d.mode == modeChange {
+		return append(rows, [2]string{"Change", d.fixed.label})
+	}
+	return append(rows, [2]string{"Layout", d.layout.String()})
 }
 
-func (d *detailView) start() { d.reload() }
+func (d *detailView) start() {
+	if d.mode == modeChange {
+		d.loadLeft()
+		return
+	}
+	git.CleanPRRefs(d.repo.path) // leftovers from an earlier session
+	d.reload()
+}
 
 func (d *detailView) reload() {
 	if d.mode == modePRs {
@@ -189,6 +305,43 @@ func (d *detailView) reload() {
 	}()
 }
 
+// update picks up refreshed data: the header always, a freshly loaded PR
+// list, and in open-work mode the file list when it changed (keeping the
+// selected file).
+func (d *detailView) update() {
+	if d.mode == modePRs && d.repo.prLoaded && d.renderedPRs != d.repo.prGen {
+		d.renderPRs()
+		return
+	}
+	if d.mode != modeWork || d.repo.err != nil || sameFiles(d.workFiles, d.repo.status.Files) {
+		return
+	}
+	selected := ""
+	if i := d.selectedIndex(d.list); i >= 0 && i < len(d.workFiles) {
+		selected = d.workFiles[i].Path
+	}
+	d.workFiles = d.repo.status.Files
+	d.renderWork()
+	for row := 1; row < d.list.GetRowCount(); row++ {
+		if i, ok := d.list.GetCell(row, 0).GetReference().(int); ok && d.workFiles[i].Path == selected {
+			d.list.Select(row, 0)
+			break
+		}
+	}
+}
+
+func sameFiles(a, b []git.File) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (d *detailView) setMode(m mode) {
 	if d.mode == m {
 		return
@@ -197,35 +350,107 @@ func (d *detailView) setMode(m mode) {
 	d.app.ui().DetailView = m.String()
 	d.app.saveGlobal()
 	d.filter.reset()
-	d.setFocus(false)
+	d.cur, d.curFiles = nil, nil
+	d.buildLayout()
+	d.setFocus(paneList)
 	d.app.refresh()
 	d.loadLeft()
 }
 
-func (d *detailView) setFocus(right bool) {
-	d.focusRight = right
-	if right {
-		d.left.SetBorderColor(colorBlur)
-		d.left.SetSelectedStyle(styleSelectedBlur)
-		d.right.SetBorderColor(colorFocus)
-	} else {
-		d.left.SetBorderColor(colorFocus)
-		d.left.SetSelectedStyle(styleSelected)
-		d.right.SetBorderColor(colorBlur)
+func (d *detailView) cycleLayout() {
+	if d.mode != modeCommits && d.mode != modePRs {
+		d.app.Flash("layouts apply to commits and pull requests")
+		return
 	}
-	d.app.SetFocus(d.focusTarget())
+	d.layout = (d.layout + 1) % 3
+	d.app.ui().Layout = d.layout.String()
+	d.app.saveGlobal()
+	d.app.Flash("layout: " + d.layout.String())
+	d.buildLayout()
+	d.setFocus(paneList)
+	d.app.refresh()
+	d.cur = nil
+	d.onListChanged()
 }
+
+// --- focus -----------------------------------------------------------------
+
+func (d *detailView) setFocus(p pane) { d.app.SetFocus(d.prim(p)) }
+
+// onFocus runs whenever a pane gains focus (keys or mouse). In the
+// content-first layout the list shows the change's message and the files
+// pane shows a file; the content pane keeps whatever was shown last.
+func (d *detailView) onFocus(p pane) {
+	d.focus = p
+	d.paintFocus()
+	if p == paneContent {
+		return
+	}
+	msg := p == paneList
+	if d.msgMode != msg {
+		d.msgMode = msg
+		if d.threePane() && d.layout == layoutContentFirst {
+			d.scheduleRight()
+		}
+	}
+}
+
+func (d *detailView) paintFocus() {
+	for _, p := range []pane{paneList, paneFiles, paneContent} {
+		color := colorBlur
+		style := styleSelectedBlur
+		if p == d.focus {
+			color, style = colorFocus, styleSelected
+		}
+		switch p {
+		case paneList:
+			d.list.SetBorderColor(color)
+			d.list.SetSelectedStyle(style)
+		case paneFiles:
+			d.files.SetBorderColor(color)
+			d.files.SetSelectedStyle(style)
+		case paneContent:
+			d.content.SetBorderColor(color)
+		}
+	}
+}
+
+func (d *detailView) moveFocus(delta int, wrap bool) {
+	i := 0
+	for j, p := range d.order {
+		if p == d.focus {
+			i = j
+		}
+	}
+	i += delta
+	if wrap {
+		i = (i + len(d.order)) % len(d.order)
+	} else {
+		i = max(0, min(len(d.order)-1, i))
+	}
+	d.setFocus(d.order[i])
+}
+
+// --- keys ------------------------------------------------------------------
 
 func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 	switch ev.Key() {
 	case tcell.KeyLeft:
-		d.setFocus(false)
+		d.moveFocus(-1, false)
 		return nil
 	case tcell.KeyRight:
-		d.setFocus(true)
+		d.moveFocus(1, false)
 		return nil
-	case tcell.KeyTab, tcell.KeyBacktab:
-		d.setFocus(!d.focusRight)
+	case tcell.KeyTab:
+		d.moveFocus(1, true)
+		return nil
+	case tcell.KeyBacktab:
+		d.moveFocus(-1, true)
+		return nil
+	case tcell.KeyEnter:
+		if d.focus == paneList && !d.threePane() {
+			d.openChange()
+		}
 		return nil
 	case tcell.KeyUp, tcell.KeyDown:
 		if ev.Modifiers()&tcell.ModShift != 0 {
@@ -234,14 +459,18 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyRune:
 		switch ev.Rune() {
-		case 'w':
-			d.setMode(modeWork)
-		case 'c':
-			d.setMode(modeCommits)
-		case 'p':
-			d.setMode(modePRs)
+		case 'w', 'c', 'p':
+			if d.mode == modeChange {
+				return nil
+			}
+			d.setMode(map[rune]mode{'w': modeWork, 'c': modeCommits, 'p': modePRs}[ev.Rune()])
+		case 'v':
+			if d.mode == modeChange {
+				return nil
+			}
+			d.cycleLayout()
 		case '/':
-			d.setFocus(false)
+			d.setFocus(paneList)
 			d.filter.show(true)
 		case 'd':
 			d.showAlt[d.mode] = !d.showAlt[d.mode]
@@ -260,7 +489,9 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 				}
 			}
 		case 'r':
-			d.reload()
+			if d.mode != modeChange {
+				d.reload()
+			}
 		case 'J':
 			d.scroll(5)
 		case 'K':
@@ -274,27 +505,42 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 }
 
 // passThrough hands a key to the focused primitive, except that an empty
-// left table gets nothing (see swallowWhenEmpty).
+// table gets nothing (see swallowWhenEmpty).
 func (d *detailView) passThrough(ev *tcell.EventKey) *tcell.EventKey {
-	if d.focusRight {
-		return ev
+	switch d.focus {
+	case paneList:
+		return swallowWhenEmpty(d.list, ev)
+	case paneFiles:
+		return swallowWhenEmpty(d.files, ev)
 	}
-	return swallowWhenEmpty(d.left, ev)
+	return ev
 }
 
 // scroll moves the focused pane by delta lines.
 func (d *detailView) scroll(delta int) {
-	if d.focusRight {
-		row, col := d.right.GetScrollOffset()
-		d.right.ScrollTo(max(0, row+delta), col)
+	if d.focus == paneContent {
+		row, col := d.content.GetScrollOffset()
+		d.content.ScrollTo(max(0, row+delta), col)
 		return
 	}
-	if d.left.GetRowCount() <= 1 {
+	t := d.list
+	if d.focus == paneFiles {
+		t = d.files
+	}
+	if t.GetRowCount() <= 1 {
 		return
 	}
-	row, _ := d.left.GetSelection()
-	row = max(1, min(d.left.GetRowCount()-1, row+delta))
-	d.left.Select(row, 0)
+	row, _ := t.GetSelection()
+	t.Select(max(1, min(t.GetRowCount()-1, row+delta)), 0)
+}
+
+// openChange pushes the files of the selected commit or PR as its own page.
+func (d *detailView) openChange() {
+	ch := d.selectedChange()
+	if ch == nil {
+		return
+	}
+	d.app.push(newChangeView(d.app, d.repo, ch))
 }
 
 // --- left pane -------------------------------------------------------------
@@ -302,15 +548,17 @@ func (d *detailView) scroll(delta int) {
 func (d *detailView) loadLeft() {
 	d.leftGen++
 	gen := d.leftGen
-	d.left.Clear()
-	d.left.SetTitle(tview.Escape(fmt.Sprintf(" %s [loading…] ", d.mode)))
-	d.right.Clear()
-	d.right.SetTitle("")
+	d.list.Clear()
+	d.list.SetTitle(tview.Escape(fmt.Sprintf(" %s [loading…] ", d.mode)))
+	d.content.Clear()
+	d.content.SetTitle("")
+	d.files.Clear()
+	d.files.SetTitle(" Files ")
 
 	switch d.mode {
 	case modeWork:
-		d.files = d.repo.status.Files
-		d.renderFiles()
+		d.workFiles = d.repo.status.Files
+		d.renderWork()
 	case modeCommits:
 		go func() {
 			commits, err := git.Commits(d.repo.path, commitLimit)
@@ -331,6 +579,26 @@ func (d *detailView) loadLeft() {
 			return
 		}
 		d.app.loadPRs([]*repoEntry{d.repo}, false) // update() renders it
+	case modeChange:
+		if cached, ok := d.filesCache[d.fixed.key]; ok {
+			d.curFiles = cached
+			d.renderChangeList()
+			return
+		}
+		go func() {
+			files, err := d.fixed.files()
+			d.app.QueueUpdateDraw(func() {
+				if gen != d.leftGen {
+					return
+				}
+				if err != nil {
+					d.app.FlashErr(err)
+				}
+				d.filesCache[d.fixed.key] = files
+				d.curFiles = files
+				d.renderChangeList()
+			})
+		}()
 	}
 }
 
@@ -338,38 +606,53 @@ func (d *detailView) loadLeft() {
 func (d *detailView) renderLeft() {
 	switch d.mode {
 	case modeWork:
-		d.renderFiles()
+		d.renderWork()
 	case modeCommits:
 		d.renderCommits()
 	case modePRs:
 		d.renderPRs()
+	case modeChange:
+		d.renderChangeList()
 	}
 }
 
-func (d *detailView) header(cols ...string) {
+func header(t *tview.Table, cols ...string) {
 	for c, h := range cols {
-		cell := tview.NewTableCell(h).SetStyle(styleHeader).SetSelectable(false)
-		d.left.SetCell(0, c, cell)
+		t.SetCell(0, c, tview.NewTableCell(h).SetStyle(styleHeader).SetSelectable(false))
 	}
 }
 
 func (d *detailView) finishLeft(title string, count int, empty string) {
-	d.left.SetTitle(tview.Escape(title + d.filter.suffix() + " "))
+	d.list.SetTitle(tview.Escape(title + d.filter.suffix() + " "))
 	if count == 0 {
-		d.right.SetTitle("")
-		d.right.SetText("[gray]" + tview.Escape(empty) + "[-]")
+		d.cur, d.curFiles = nil, nil
+		d.files.Clear()
+		d.files.SetTitle(" Files ")
+		d.content.SetTitle("")
+		d.content.SetText("[gray]" + tview.Escape(empty) + "[-]")
 		return
 	}
-	d.left.Select(1, 0)
-	d.left.ScrollToBeginning()
+	d.list.Select(1, 0) // triggers onListChanged
+	d.list.ScrollToBeginning()
+}
+
+// onListChanged follows the list selection: files pane and content.
+func (d *detailView) onListChanged() {
+	if d.threePane() {
+		ch := d.selectedChange()
+		if ch == nil || d.cur == nil || ch.key != d.cur.key {
+			d.cur = ch
+			d.loadFiles()
+		}
+	}
 	d.scheduleRight()
 }
 
-func (d *detailView) renderFiles() {
-	d.left.Clear()
-	d.header("ST", "FILE")
+func (d *detailView) renderWork() {
+	d.list.Clear()
+	header(d.list, "ST", "FILE")
 	row := 1
-	for i, f := range d.files {
+	for i, f := range d.workFiles {
 		name := f.Path
 		if f.OrigPath != "" {
 			name += " ← " + f.OrigPath
@@ -377,8 +660,8 @@ func (d *detailView) renderFiles() {
 		if !d.filter.match(name, f.XY) {
 			continue
 		}
-		d.left.SetCell(row, 0, tview.NewTableCell(f.XY).SetTextColor(statusColor(f.XY)).SetReference(i))
-		d.left.SetCell(row, 1, tview.NewTableCell(tview.Escape(name)).SetTextColor(colorValue).SetExpansion(1))
+		d.list.SetCell(row, 0, tview.NewTableCell(f.XY).SetTextColor(statusColor(f.XY)).SetReference(i))
+		d.list.SetCell(row, 1, tview.NewTableCell(tview.Escape(name)).SetTextColor(colorValue).SetExpansion(1))
 		row++
 	}
 	d.finishLeft(fmt.Sprintf(" Open Work[%d]", row-1), row-1, "working tree clean")
@@ -397,23 +680,60 @@ func statusColor(xy string) tcell.Color {
 	}
 }
 
+func changeColor(status string) tcell.Color {
+	switch status {
+	case "A":
+		return colorClean
+	case "D":
+		return colorError
+	case "R", "C":
+		return colorTitle
+	}
+	return colorDirty
+}
+
+// fillChangeFiles renders a change's files into a table; match filters rows.
+func fillChangeFiles(t *tview.Table, files []git.ChangedFile, match func(...string) bool) int {
+	t.Clear()
+	header(t, "ST", "FILE")
+	row := 1
+	for i, f := range files {
+		name := f.Path
+		if f.OrigPath != "" {
+			name += " ← " + f.OrigPath
+		}
+		if match != nil && !match(name, f.Status) {
+			continue
+		}
+		t.SetCell(row, 0, tview.NewTableCell(f.Status).SetTextColor(changeColor(f.Status)).SetReference(i))
+		t.SetCell(row, 1, tview.NewTableCell(tview.Escape(name)).SetTextColor(colorValue).SetExpansion(1))
+		row++
+	}
+	return row - 1
+}
+
+func (d *detailView) renderChangeList() {
+	n := fillChangeFiles(d.list, d.curFiles, d.filter.match)
+	d.finishLeft(fmt.Sprintf(" Files(%s)[%d]", d.fixed.label, n), n, "no files changed")
+}
+
 func (d *detailView) renderCommits() {
-	d.left.Clear()
-	d.header("SHA", "", "AGE", "AUTHOR", "SUBJECT")
+	d.list.Clear()
+	header(d.list, "SHA", "", "AGE", "AUTHOR", "SUBJECT")
 	row := 1
 	for i, c := range d.commits {
 		if !d.filter.match(c.Short, c.Author, c.Subject) {
 			continue
 		}
-		d.left.SetCell(row, 0, tview.NewTableCell(c.Short).SetTextColor(colorSHA).SetReference(i))
+		d.list.SetCell(row, 0, tview.NewTableCell(c.Short).SetTextColor(colorSHA).SetReference(i))
 		mark := tview.NewTableCell("").SetTextColor(colorDirty)
 		if c.Unpushed {
 			mark.SetText("↑")
 		}
-		d.left.SetCell(row, 1, mark)
-		d.left.SetCell(row, 2, tview.NewTableCell(age(c.When)).SetTextColor(colorMuted))
-		d.left.SetCell(row, 3, tview.NewTableCell(tview.Escape(trunc(c.Author, 16))).SetTextColor(colorMuted))
-		d.left.SetCell(row, 4, tview.NewTableCell(tview.Escape(c.Subject)).SetTextColor(colorValue).SetExpansion(1))
+		d.list.SetCell(row, 1, mark)
+		d.list.SetCell(row, 2, tview.NewTableCell(age(c.When)).SetTextColor(colorMuted))
+		d.list.SetCell(row, 3, tview.NewTableCell(tview.Escape(trunc(c.Author, 16))).SetTextColor(colorMuted))
+		d.list.SetCell(row, 4, tview.NewTableCell(tview.Escape(c.Subject)).SetTextColor(colorValue).SetExpansion(1))
 		row++
 	}
 	more := ""
@@ -426,8 +746,8 @@ func (d *detailView) renderCommits() {
 func (d *detailView) renderPRs() {
 	r := d.repo
 	d.renderedPRs = r.prGen
-	d.left.Clear()
-	d.header("#", "TITLE", "AUTHOR", "HEAD → BASE", "UPDATED")
+	d.list.Clear()
+	header(d.list, "#", "TITLE", "AUTHOR", "HEAD → BASE", "UPDATED")
 	row, selectRow := 1, 0
 	for i, p := range r.prs {
 		if d.mineOnly && !p.Mine {
@@ -443,11 +763,11 @@ func (d *detailView) renderPRs() {
 		if p.Number == d.openPR {
 			selectRow = row
 		}
-		d.left.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(p.Number)).SetTextColor(colorSHA).SetReference(i))
-		d.left.SetCell(row, 1, tview.NewTableCell(tview.Escape(title)).SetTextColor(colorValue).SetExpansion(1))
-		d.left.SetCell(row, 2, tview.NewTableCell(tview.Escape(trunc(p.Author, 18))).SetTextColor(colorMuted))
-		d.left.SetCell(row, 3, tview.NewTableCell(tview.Escape(p.Head+" → "+p.Base)).SetTextColor(colorMuted))
-		d.left.SetCell(row, 4, tview.NewTableCell(age(p.Updated)).SetTextColor(colorMuted))
+		d.list.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(p.Number)).SetTextColor(colorSHA).SetReference(i))
+		d.list.SetCell(row, 1, tview.NewTableCell(tview.Escape(title)).SetTextColor(colorValue).SetExpansion(1))
+		d.list.SetCell(row, 2, tview.NewTableCell(tview.Escape(trunc(p.Author, 18))).SetTextColor(colorMuted))
+		d.list.SetCell(row, 3, tview.NewTableCell(tview.Escape(p.Head+" → "+p.Base)).SetTextColor(colorMuted))
+		d.list.SetCell(row, 4, tview.NewTableCell(age(p.Updated)).SetTextColor(colorMuted))
 		row++
 	}
 	scope := "mine"
@@ -466,19 +786,64 @@ func (d *detailView) renderPRs() {
 	}
 	d.finishLeft(fmt.Sprintf(" Pull Requests(%s)[%d] %s", scope, row-1, where), row-1, empty)
 	if selectRow > 0 {
-		d.left.Select(selectRow, 0)
+		d.list.Select(selectRow, 0)
 	}
 	d.openPR = 0
 }
 
-// --- right pane ------------------------------------------------------------
+// --- files pane (three-pane layouts) ----------------------------------------
 
-func (d *detailView) selectedIndex() int {
-	row, _ := d.left.GetSelection()
+func (d *detailView) loadFiles() {
+	d.filesGen++
+	gen := d.filesGen
+	d.files.Clear()
+	d.curFiles = nil
+	ch := d.cur
+	if ch == nil {
+		d.files.SetTitle(" Files ")
+		return
+	}
+	if cached, ok := d.filesCache[ch.key]; ok {
+		d.curFiles = cached
+		d.renderFiles()
+		return
+	}
+	d.files.SetTitle(tview.Escape(fmt.Sprintf(" Files(%s) [loading…] ", ch.label)))
+	go func() {
+		files, err := ch.files()
+		d.app.QueueUpdateDraw(func() {
+			if gen != d.filesGen {
+				return
+			}
+			if err != nil {
+				d.app.FlashErr(err)
+			}
+			d.filesCache[ch.key] = files
+			d.curFiles = files
+			d.renderFiles()
+		})
+	}()
+}
+
+func (d *detailView) renderFiles() {
+	n := fillChangeFiles(d.files, d.curFiles, nil)
+	d.files.SetTitle(tview.Escape(fmt.Sprintf(" Files(%s)[%d] ", d.cur.label, n)))
+	if n > 0 {
+		d.files.Select(1, 0) // triggers the files selection handler
+		d.files.ScrollToBeginning()
+	} else {
+		d.scheduleRight()
+	}
+}
+
+// --- changes ---------------------------------------------------------------
+
+func (d *detailView) selectedIndex(t *tview.Table) int {
+	row, _ := t.GetSelection()
 	if row < 1 {
 		return -1
 	}
-	if i, ok := d.left.GetCell(row, 0).GetReference().(int); ok {
+	if i, ok := t.GetCell(row, 0).GetReference().(int); ok {
 		return i
 	}
 	return -1
@@ -488,13 +853,100 @@ func (d *detailView) selectedPR() *pr.PR {
 	if d.mode != modePRs {
 		return nil
 	}
-	if i := d.selectedIndex(); i >= 0 && i < len(d.repo.prs) {
+	if i := d.selectedIndex(d.list); i >= 0 && i < len(d.repo.prs) {
 		return &d.repo.prs[i]
 	}
 	return nil
 }
 
-// scheduleRight debounces right-pane loads while the selection moves fast.
+// selectedChange wraps the selected commit or pull request.
+func (d *detailView) selectedChange() *change {
+	i := d.selectedIndex(d.list)
+	switch d.mode {
+	case modeCommits:
+		if i >= 0 && i < len(d.commits) {
+			return d.commitChange(d.commits[i])
+		}
+	case modePRs:
+		if i >= 0 && i < len(d.repo.prs) {
+			return d.prChange(d.repo.prs[i])
+		}
+	}
+	return nil
+}
+
+func (d *detailView) commitChange(c git.Commit) *change {
+	dir, style := d.repo.path, d.app.syntaxStyle
+	diff := func(full bool) func() (string, error) {
+		return func() (string, error) {
+			out, err := git.Show(dir, c.SHA, full)
+			return colorizeDiff(out, style), err
+		}
+	}
+	return &change{
+		key: c.SHA, label: c.Short,
+		files: func() ([]git.ChangedFile, error) { return git.CommitFiles(dir, c.SHA) },
+		fileText: func(f git.ChangedFile, full bool) (string, error) {
+			out, err := git.CommitFileDiff(dir, c.SHA, f, full)
+			return colorizeDiff(out, style), err
+		},
+		message: func() (string, error) {
+			out, err := git.CommitMessage(dir, c.SHA)
+			return colorizeDiff(out, style), err
+		},
+		primary: diff(false), alt: diff(true), labels: [2]string{"diff", "full file"},
+	}
+}
+
+func (d *detailView) prChange(p pr.PR) *change {
+	dir, style, remote := d.repo.path, d.app.syntaxStyle, d.repo.prRemote
+	refs := func() (string, string, error) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if r, ok := d.prRefs[p.Number]; ok {
+			return r[0], r[1], nil
+		}
+		base, head, err := git.FetchPR(dir, remote.Name, p.Number, p.Base)
+		if err == nil {
+			d.prRefs[p.Number] = [2]string{base, head}
+		}
+		return base, head, err
+	}
+	details := func() (string, error) { return prDetails(p), nil }
+	return &change{
+		key: fmt.Sprintf("pr-%d", p.Number), label: fmt.Sprintf("#%d", p.Number),
+		files: func() ([]git.ChangedFile, error) {
+			base, head, err := refs()
+			if err != nil {
+				return nil, err
+			}
+			return git.RangeFiles(dir, base, head)
+		},
+		fileText: func(f git.ChangedFile, full bool) (string, error) {
+			base, head, err := refs()
+			if err != nil {
+				return "", err
+			}
+			out, err := git.RangeFileDiff(dir, base, head, f, full)
+			return colorizeDiff(out, style), err
+		},
+		message: details,
+		primary: details,
+		alt: func() (string, error) {
+			base, head, err := refs()
+			if err != nil {
+				return "", err
+			}
+			out, err := git.RangeDiff(dir, base, head)
+			return colorizeDiff(out, style), err
+		},
+		labels: [2]string{"details", "diff"},
+	}
+}
+
+// --- content pane ----------------------------------------------------------
+
+// scheduleRight debounces content loads while the selection moves fast.
 func (d *detailView) scheduleRight() {
 	d.rightGen++
 	gen := d.rightGen
@@ -502,12 +954,12 @@ func (d *detailView) scheduleRight() {
 		d.rightTimer.Stop()
 	}
 	title, load := d.rightJob()
-	d.right.SetTitle(tview.Escape(title))
+	d.content.SetTitle(tview.Escape(title))
 	if load == nil {
-		d.right.SetText("")
+		d.content.SetText("")
 		return
 	}
-	d.right.SetText("[gray]loading…[-]")
+	d.content.SetText("[gray]loading…[-]")
 	d.rightTimer = time.AfterFunc(60*time.Millisecond, func() {
 		text, err := load()
 		d.app.QueueUpdateDraw(func() {
@@ -517,23 +969,27 @@ func (d *detailView) scheduleRight() {
 			if err != nil {
 				text = "[red]" + tview.Escape(err.Error()) + "[-]"
 			}
-			d.right.SetText(text)
-			d.right.ScrollToBeginning()
+			d.content.SetText(text)
+			d.content.ScrollToBeginning()
 		})
 	})
 }
 
-// rightJob returns the right-pane title and a loader for the current selection.
+// rightJob returns the content title and a loader for the current state.
 func (d *detailView) rightJob() (string, func() (string, error)) {
-	i := d.selectedIndex()
 	alt := d.showAlt[d.mode]
-	style := d.app.syntaxStyle
-	switch d.mode {
-	case modeWork:
-		if i < 0 || i >= len(d.files) {
+	fileLabel := "diff"
+	if alt {
+		fileLabel = "full file"
+	}
+	switch {
+	case d.mode == modeWork:
+		i := d.selectedIndex(d.list)
+		if i < 0 || i >= len(d.workFiles) {
 			return "", nil
 		}
-		f := d.files[i]
+		f := d.workFiles[i]
+		style := d.app.syntaxStyle
 		if alt {
 			return fmt.Sprintf(" %s [diff] ", f.Path), func() (string, error) {
 				out, err := git.WorkDiff(d.repo.path, f)
@@ -547,35 +1003,37 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 			}
 			return numbered(newHighlighter(f.Path, out, style).lines(out)), err
 		}
-	case modeCommits:
-		if i < 0 || i >= len(d.commits) {
+	case d.mode == modeChange:
+		i := d.selectedIndex(d.list)
+		if i < 0 || i >= len(d.curFiles) {
 			return "", nil
 		}
-		c := d.commits[i]
-		label := "diff"
-		if alt {
-			label = "full file"
-		}
-		return fmt.Sprintf(" %s [%s] ", c.Short, label), func() (string, error) {
-			out, err := git.Show(d.repo.path, c.SHA, alt)
-			return colorizeDiff(out, style), err
-		}
-	case modePRs:
-		if i < 0 || i >= len(d.repo.prs) {
+		f := d.curFiles[i]
+		return fmt.Sprintf(" %s [%s] ", f.Path, fileLabel), func() (string, error) { return d.fixed.fileText(f, alt) }
+	case !d.threePane():
+		ch := d.selectedChange()
+		if ch == nil {
 			return "", nil
 		}
-		p := d.repo.prs[i]
 		if alt {
-			return fmt.Sprintf(" #%d [diff] ", p.Number), func() (string, error) {
-				out, err := git.PRDiff(d.repo.path, d.repo.prRemote.Name, p.Number, p.Base)
-				return colorizeDiff(out, style), err
-			}
+			return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[1]), ch.alt
 		}
-		return fmt.Sprintf(" #%d [details] ", p.Number), func() (string, error) {
-			return prDetails(p), nil
+		return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[0]), ch.primary
+	case d.layout == layoutContentFirst && d.msgMode:
+		ch := d.cur
+		if ch == nil {
+			return "", nil
 		}
+		return fmt.Sprintf(" %s [message] ", ch.label), ch.message
+	default:
+		ch := d.cur
+		i := d.selectedIndex(d.files)
+		if ch == nil || i < 0 || i >= len(d.curFiles) {
+			return "", nil
+		}
+		f := d.curFiles[i]
+		return fmt.Sprintf(" %s: %s [%s] ", ch.label, f.Path, fileLabel), func() (string, error) { return ch.fileText(f, alt) }
 	}
-	return "", nil
 }
 
 func prDetails(p pr.PR) string {

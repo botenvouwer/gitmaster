@@ -558,8 +558,7 @@ func (m *masterView) open() {
 		if r == nil {
 			return
 		}
-		d := newDetail(m.app, r)
-		d.mode = modePRs
+		d := newDetail(m.app, r, modePRs)
 		d.openPR = p.Number
 		d.mineOnly = p.Mine // the chosen PR must be in the list
 		m.app.push(d)
@@ -569,7 +568,7 @@ func (m *masterView) open() {
 	if r == nil {
 		return
 	}
-	m.app.push(newDetail(m.app, r))
+	m.app.push(newDetail(m.app, r, parseMode(m.app.ui().DetailView)))
 }
 
 func shortenHome(p string) string {

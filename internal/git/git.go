@@ -296,20 +296,109 @@ func FileContent(dir, path string) (string, error) {
 	return truncate(string(data)), nil
 }
 
-// PRDiff fetches a pull request's head and base refs into a private ref
-// namespace, diffs them, and removes the refs again.
-func PRDiff(dir, remote string, number int, base string) (string, error) {
-	headRef := fmt.Sprintf("refs/gitmaster/pr/%d/head", number)
-	baseRef := fmt.Sprintf("refs/gitmaster/pr/%d/base", number)
-	defer func() {
-		run(dir, "update-ref", "-d", headRef)
-		run(dir, "update-ref", "-d", baseRef)
-	}()
-	if _, err := run(dir, "fetch", "-q", remote,
-		fmt.Sprintf("+refs/pull/%d/head:%s", number, headRef),
-		fmt.Sprintf("+refs/heads/%s:%s", base, baseRef)); err != nil {
-		return "", err
+// ChangedFile is one file touched by a commit or a pull request.
+type ChangedFile struct {
+	Status   string // A, M, D, R, C, T, U
+	Path     string
+	OrigPath string // for renames/copies
+}
+
+// Paths returns the pathspec that selects this file's diff.
+func (f ChangedFile) Paths() []string {
+	if f.OrigPath != "" {
+		return []string{f.Path, f.OrigPath}
 	}
+	return []string{f.Path}
+}
+
+// parseNameStatus reads `--name-status -z` output.
+func parseNameStatus(out string) []ChangedFile {
+	toks := strings.Split(out, "\x00")
+	var files []ChangedFile
+	for i := 0; i < len(toks); {
+		st := toks[i]
+		i++
+		if st == "" || i >= len(toks) {
+			continue
+		}
+		f := ChangedFile{Status: st[:1], Path: toks[i]}
+		i++
+		if (st[0] == 'R' || st[0] == 'C') && i < len(toks) {
+			f.OrigPath, f.Path = f.Path, toks[i]
+			i++
+		}
+		files = append(files, f)
+	}
+	return files
+}
+
+// CommitFiles lists the files touched by a commit.
+func CommitFiles(dir, sha string) ([]ChangedFile, error) {
+	out, err := run(dir, "show", "--name-status", "--format=", "-M", "-z", sha)
+	if err != nil {
+		return nil, err
+	}
+	return parseNameStatus(out), nil
+}
+
+// CommitFileDiff returns one file's patch in a commit; full shows the whole
+// file with the changes inline.
+func CommitFileDiff(dir, sha string, f ChangedFile, full bool) (string, error) {
+	args := []string{"show", "--format=", "-M"}
+	if full {
+		args = append(args, "-U999999")
+	}
+	args = append(append(args, sha, "--"), f.Paths()...)
+	out, err := run(dir, args...)
+	return truncate(out), err
+}
+
+// CommitMessage returns a commit's header, message and diffstat.
+func CommitMessage(dir, sha string) (string, error) {
+	return run(dir, "show", "--stat", "--format=medium", sha)
+}
+
+// FetchPR fetches a pull request's head and base into a private ref
+// namespace and returns the two refs. Call CleanPRRefs when done.
+func FetchPR(dir, remote string, number int, base string) (baseRef, headRef string, err error) {
+	headRef = fmt.Sprintf("refs/gitmaster/pr/%d/head", number)
+	baseRef = fmt.Sprintf("refs/gitmaster/pr/%d/base", number)
+	_, err = run(dir, "fetch", "-q", remote,
+		fmt.Sprintf("+refs/pull/%d/head:%s", number, headRef),
+		fmt.Sprintf("+refs/heads/%s:%s", base, baseRef))
+	return baseRef, headRef, err
+}
+
+// CleanPRRefs removes every ref FetchPR created in the repo.
+func CleanPRRefs(dir string) {
+	out, _ := run(dir, "for-each-ref", "--format=%(refname)", "refs/gitmaster/")
+	for _, ref := range strings.Fields(out) {
+		run(dir, "update-ref", "-d", ref)
+	}
+}
+
+// RangeFiles lists the files changed between base and head (merge-base diff).
+func RangeFiles(dir, baseRef, headRef string) ([]ChangedFile, error) {
+	out, err := run(dir, "diff", "--name-status", "-M", "-z", baseRef+"..."+headRef)
+	if err != nil {
+		return nil, err
+	}
+	return parseNameStatus(out), nil
+}
+
+// RangeFileDiff returns one file's patch between base and head.
+func RangeFileDiff(dir, baseRef, headRef string, f ChangedFile, full bool) (string, error) {
+	args := []string{"diff", "-M"}
+	if full {
+		args = append(args, "-U999999")
+	}
+	args = append(append(args, baseRef+"..."+headRef, "--"), f.Paths()...)
+	out, err := run(dir, args...)
+	return truncate(out), err
+}
+
+// RangeDiff returns the stat and patch between base and head.
+func RangeDiff(dir, baseRef, headRef string) (string, error) {
 	out, err := run(dir, "diff", "--stat", "--patch", baseRef+"..."+headRef)
 	return truncate(out), err
 }

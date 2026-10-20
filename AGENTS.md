@@ -33,9 +33,9 @@ namespace.
   per repo, cached on the `repoEntry`), `m` mine/all, `o` browser, `enter`
   opens the repo's PR view on that PR.
 - **Remembered views**: the master view (repos/pulls), the repo-screen
-  mode (open work/commits/pull requests) and the PR mine/all filter (one
-  setting shared by the overview and the repo's PR view) are stored in the
-  global config's `ui` section whenever they are switched, so new screens
+  mode (open work/commits/pull requests), the layout and the PR mine/all
+  filter (one setting shared by the overview and the repo's PR view) are
+  stored in the global config's `ui` section whenever they are switched, so new screens
   and the next start open in the same view.
 - **Project repos editor**: checklist of every repo; space/enter toggles
   membership, saved immediately.
@@ -47,6 +47,17 @@ namespace.
     `d` toggles to full-file view (`-U999999`).
   - **pull requests** (`p`): open PRs on `origin`; right pane shows details,
     `d` toggles to the PR diff; `m` toggles mine/all; `o` opens in browser.
+  - Commits and PRs are "changes" (`change` struct in `detail.go`): a file
+    list (`--name-status`), a per-file diff / full view and a message view.
+    `v` cycles the **layout**, remembered in `ui.layout`:
+    *default* = list | content, Enter pushes a files | content page for the
+    change (`newChangeView`, mode `modeChange`);
+    *files first* = list | files | content;
+    *content first* = list | content (65%) | files, where the content shows
+    the change's message while the list was focused last and the selected
+    file once the files pane was focused (`msgMode`).
+    PR refs are fetched once per PR into `refs/gitmaster/pr/<n>/` and deleted
+    when the repo screen is popped (`stop()`, called by `App.pop`).
 
 ## Configuration
 
@@ -99,9 +110,9 @@ internal/ui        tview UI: app.go (shell/nav/help), env.go (repo scan + remote
   `modal.go` and are closed by Esc in `globalKeys`.
 - Never let a navigation key reach a tview `Table` that only has its header
   row: tview v0.42 loops forever (see `table.go`).
-- PR diffs are fetched into the temporary `refs/gitmaster/pr/<n>/{head,base}`
-  refs and deleted afterwards; `refs/pull/<n>/head` exists on both GitHub and
-  Gitea.
+- PR diffs come from the temporary `refs/gitmaster/pr/<n>/{head,base}` refs
+  (`git.FetchPR`), removed by `git.CleanPRRefs` when the repo screen closes
+  and on its next open; `refs/pull/<n>/head` exists on both GitHub and Gitea.
 
 ## Build / install
 

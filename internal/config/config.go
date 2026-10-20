@@ -54,6 +54,7 @@ type UIState struct {
 	MasterView string `json:"masterView"` // "repos" or "pulls"
 	DetailView string `json:"detailView"` // "open work", "commits" or "pull requests"
 	PRFilter   string `json:"prFilter"`   // "all" or "mine", shared by the PR overview and the repo's PR view
+	Layout     string `json:"layout"`     // repo screen layout for commits/PRs: "default", "files first", "content first"
 }
 
 // MineOnly reports whether pull-request lists should show only the user's own.

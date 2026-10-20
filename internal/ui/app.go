@@ -147,6 +147,9 @@ func (a *App) pop() {
 		a.Stop()
 		return
 	}
+	if c, ok := a.top().(interface{ stop() }); ok {
+		c.stop()
+	}
 	a.pages.RemovePage(pageName(len(a.stack) - 1))
 	a.stack = a.stack[:len(a.stack)-1]
 	a.pages.ShowPage(pageName(len(a.stack) - 1))

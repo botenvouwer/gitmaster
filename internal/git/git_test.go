@@ -4,8 +4,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestParseNameStatus(t *testing.T) {
+	files := parseNameStatus("M\x00a.go\x00R100\x00old.txt\x00new.txt\x00D\x00gone\x00")
+	want := []ChangedFile{{"M", "a.go", ""}, {"R", "new.txt", "old.txt"}, {"D", "gone", ""}}
+	if len(files) != len(want) {
+		t.Fatalf("got %+v", files)
+	}
+	for i := range want {
+		if files[i] != want[i] {
+			t.Fatalf("file %d = %+v, want %+v", i, files[i], want[i])
+		}
+	}
+}
 
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -74,6 +88,17 @@ func TestStatusAndCommits(t *testing.T) {
 	show, err := Show(repo, commits[0].SHA, false)
 	if err != nil || len(show) == 0 {
 		t.Fatalf("Show: %v", err)
+	}
+	files, err := CommitFiles(repo, commits[0].SHA)
+	if err != nil || len(files) != 2 || files[0].Status != "A" || files[0].Path != "a.txt" {
+		t.Fatalf("CommitFiles = %+v, %v", files, err)
+	}
+	fd, err := CommitFileDiff(repo, commits[0].SHA, files[1], false)
+	if err != nil || !strings.Contains(fd, "+two") || strings.Contains(fd, "+one") {
+		t.Fatalf("CommitFileDiff = %q, %v", fd, err)
+	}
+	if msg, err := CommitMessage(repo, commits[0].SHA); err != nil || !strings.Contains(msg, "first") || !strings.Contains(msg, "2 files changed") {
+		t.Fatalf("CommitMessage = %q, %v", msg, err)
 	}
 	diff, err := WorkDiff(repo, File{Path: "c.txt", Untracked: true})
 	if err != nil || len(diff) == 0 {
