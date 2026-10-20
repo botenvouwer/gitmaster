@@ -32,6 +32,50 @@ type repoEntry struct {
 	prLoaded  bool
 	prLoading bool
 	prGen     int // bumped on every load so views can tell what they rendered
+
+	// Live status: the user's recent commits and closed PRs.
+	myCommits    []git.Commit
+	commitsSince time.Time
+	closedPRs    []pr.PR
+	closedSince  time.Time
+	closedErr    error
+	liveLoading  bool
+}
+
+// loadLive fetches, for the live status screen, each repo's open PRs, the
+// user's commits since the window start and the user's PRs closed since then.
+func (a *App) loadLive(repos []*repoEntry, since time.Time, force bool) {
+	a.loadPRs(repos, force)
+	e := a.env
+	gen := e.gen
+	sem := make(chan struct{}, 4)
+	for _, r := range repos {
+		if r.liveLoading || (!force && !r.closedSince.IsZero() && !r.closedSince.After(since) && !r.commitsSince.After(since)) {
+			continue
+		}
+		r.liveLoading = true
+		go func(r *repoEntry) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			commits, cerr := git.MyCommits(r.path, since)
+			remote, err := pr.Detect(r.path)
+			var closed []pr.PR
+			if err == nil {
+				closed, err = pr.ListClosed(r.path, remote, since)
+			}
+			a.QueueUpdateDraw(func() {
+				r.liveLoading = false
+				if gen != e.gen {
+					return
+				}
+				if cerr == nil {
+					r.myCommits, r.commitsSince = commits, since
+				}
+				r.closedPRs, r.closedErr, r.closedSince = closed, err, since
+				a.notify()
+			})
+		}(r)
+	}
 }
 
 // loadPRs fetches the open pull requests of repos that have none yet (or of
@@ -332,6 +376,12 @@ func (a *App) startAutoRefresh() {
 	}()
 }
 
+// liveRefresher is implemented by the live status screen: its commits are
+// re-read on every tick too.
+type liveRefresher interface {
+	liveSince() time.Time
+}
+
 // refreshStatuses runs on the UI goroutine; the git work happens in the
 // background and a tick is skipped while the previous one is still running.
 func (a *App) refreshStatuses() {
@@ -346,13 +396,19 @@ func (a *App) refreshStatuses() {
 	if len(targets) == 0 {
 		return
 	}
+	var since time.Time
+	if lv, ok := a.top().(liveRefresher); ok {
+		since = lv.liveSince()
+	}
 	e := a.env
 	gen := e.gen
 	a.refreshing = true
 	go func() {
 		type result struct {
-			status git.Status
-			err    error
+			status  git.Status
+			err     error
+			commits []git.Commit
+			cerr    error
 		}
 		results := make([]result, len(targets))
 		sem := make(chan struct{}, 8)
@@ -364,7 +420,11 @@ func (a *App) refreshStatuses() {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				st, err := git.GetStatus(r.path)
-				results[i] = result{st, err}
+				res := result{status: st, err: err}
+				if !since.IsZero() {
+					res.commits, res.cerr = git.MyCommits(r.path, since)
+				}
+				results[i] = res
 			}(i, r)
 		}
 		wg.Wait()
@@ -376,6 +436,10 @@ func (a *App) refreshStatuses() {
 			changed := false
 			for i, r := range targets {
 				res := results[i]
+				if !since.IsZero() && res.cerr == nil && commitsKey(res.commits) != commitsKey(r.myCommits) {
+					r.myCommits, r.commitsSince = res.commits, since
+					changed = true
+				}
 				if res.err == nil && r.loaded && r.err == nil && statusKey(res.status) == statusKey(r.status) {
 					continue
 				}
@@ -387,6 +451,21 @@ func (a *App) refreshStatuses() {
 			}
 		})
 	}()
+}
+
+func commitsKey(cs []git.Commit) string {
+	var b strings.Builder
+	for _, c := range cs {
+		b.WriteString(c.SHA)
+		if c.Unpushed {
+			b.WriteByte('^')
+		}
+		if c.OnBase {
+			b.WriteByte('=')
+		}
+		b.WriteString(c.Branch + "|")
+	}
+	return b.String()
 }
 
 // statusKey captures everything the tables show, for change detection.

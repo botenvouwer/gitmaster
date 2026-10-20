@@ -54,8 +54,10 @@ type PR struct {
 	URL     string
 	Body    string
 	Draft   bool
+	State   string // open, closed or merged
 	Created time.Time
 	Updated time.Time
+	Closed  time.Time // closed/merged PRs only
 	Mine    bool
 }
 
@@ -128,18 +130,38 @@ func parseRemote(raw string) (host, slug string) {
 
 // List returns the open pull requests on the remote.
 func List(dir string, r Remote) ([]PR, error) {
+	return list(dir, r, "open", 100)
+}
+
+// ListClosed returns the user's own pull requests closed or merged since the
+// given time (the remote returns the most recently updated ones first).
+func ListClosed(dir string, r Remote, since time.Time) ([]PR, error) {
+	prs, err := list(dir, r, "closed", 50)
+	if err != nil {
+		return nil, err
+	}
+	var out []PR
+	for _, p := range prs {
+		if p.Mine && !p.Closed.Before(since) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func list(dir string, r Remote, state string, limit int) ([]PR, error) {
 	switch r.Provider {
 	case GitHub:
-		return listGitHub(dir, r)
+		return listGitHub(dir, r, state, limit)
 	case Gitea:
-		return listGitea(dir, r)
+		return listGitea(dir, r, state, limit)
 	}
 	return nil, fmt.Errorf("unsupported provider")
 }
 
-func listGitHub(dir string, r Remote) ([]PR, error) {
-	out, err := runCmd(dir, "gh", "pr", "list", "--state", "open", "--limit", "100",
-		"--json", "number,title,author,headRefName,baseRefName,url,body,isDraft,createdAt,updatedAt")
+func listGitHub(dir string, r Remote, state string, limit int) ([]PR, error) {
+	out, err := runCmd(dir, "gh", "pr", "list", "--state", state, "--limit", strconv.Itoa(limit),
+		"--json", "number,title,author,headRefName,baseRefName,url,body,isDraft,state,createdAt,updatedAt,closedAt,mergedAt")
 	if err != nil {
 		return nil, err
 	}
@@ -147,37 +169,48 @@ func listGitHub(dir string, r Remote) ([]PR, error) {
 		Number    int    `json:"number"`
 		Title     string `json:"title"`
 		Author    struct{ Login string }
-		Head      string    `json:"headRefName"`
-		Base      string    `json:"baseRefName"`
-		URL       string    `json:"url"`
-		Body      string    `json:"body"`
-		IsDraft   bool      `json:"isDraft"`
-		CreatedAt time.Time `json:"createdAt"`
-		UpdatedAt time.Time `json:"updatedAt"`
+		Head      string     `json:"headRefName"`
+		Base      string     `json:"baseRefName"`
+		URL       string     `json:"url"`
+		Body      string     `json:"body"`
+		IsDraft   bool       `json:"isDraft"`
+		State     string     `json:"state"`
+		CreatedAt time.Time  `json:"createdAt"`
+		UpdatedAt time.Time  `json:"updatedAt"`
+		ClosedAt  *time.Time `json:"closedAt"`
+		MergedAt  *time.Time `json:"mergedAt"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("gh output: %w", err)
 	}
 	prs := make([]PR, 0, len(raw))
 	for _, p := range raw {
-		prs = append(prs, PR{
+		pr := PR{
 			Number: p.Number, Title: p.Title, Author: p.Author.Login, Head: p.Head, Base: p.Base,
-			URL: p.URL, Body: p.Body, Draft: p.IsDraft, Created: p.CreatedAt, Updated: p.UpdatedAt,
+			URL: p.URL, Body: p.Body, Draft: p.IsDraft, State: strings.ToLower(p.State),
+			Created: p.CreatedAt, Updated: p.UpdatedAt,
 			Mine: r.Login != "" && strings.EqualFold(p.Author.Login, r.Login),
-		})
+		}
+		if p.MergedAt != nil {
+			pr.Closed = *p.MergedAt
+		} else if p.ClosedAt != nil {
+			pr.Closed = *p.ClosedAt
+		}
+		prs = append(prs, pr)
 	}
 	return prs, nil
 }
 
-func listGitea(dir string, r Remote) ([]PR, error) {
-	out, err := runCmd(dir, "tea", "pr", "ls", "--state", "open", "--limit", "100", "-o", "json",
-		"--fields", "index,title,author,url,head,base,created,updated,body")
+func listGitea(dir string, r Remote, state string, limit int) ([]PR, error) {
+	out, err := runCmd(dir, "tea", "pr", "ls", "--state", state, "--limit", strconv.Itoa(limit), "-o", "json",
+		"--fields", "index,title,state,author,url,head,base,created,updated,body")
 	if err != nil {
 		return nil, err
 	}
 	var raw []struct {
 		Index   string `json:"index"`
 		Title   string `json:"title"`
+		State   string `json:"state"`
 		Author  string `json:"author"`
 		URL     string `json:"url"`
 		Head    string `json:"head"`
@@ -194,11 +227,15 @@ func listGitea(dir string, r Remote) ([]PR, error) {
 		n, _ := strconv.Atoi(p.Index)
 		created, _ := time.Parse(time.RFC3339, p.Created)
 		updated, _ := time.Parse(time.RFC3339, p.Updated)
-		prs = append(prs, PR{
+		pr := PR{
 			Number: n, Title: p.Title, Author: p.Author, Head: p.Head, Base: p.Base,
-			URL: p.URL, Body: p.Body, Created: created, Updated: updated,
+			URL: p.URL, Body: p.Body, State: strings.ToLower(p.State), Created: created, Updated: updated,
 			Mine: isMe(r.Login, p.Author),
-		})
+		}
+		if pr.State != "open" {
+			pr.Closed = updated // tea has no close time; the last update is it
+		}
+		prs = append(prs, pr)
 	}
 	return prs, nil
 }

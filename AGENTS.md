@@ -32,7 +32,17 @@ namespace.
   overview** of the same scope: every open PR of those repos (streamed in
   per repo, cached on the `repoEntry`), `m` mine/all, `o` browser, `enter`
   opens the repo's PR view on that PR.
-- **Remembered views**: the master view (repos/pulls), the repo-screen
+- **Live status** (`tab` on the repos screen, the top row of Home, or `L`):
+  the user's work in the chosen window, in four sections: open work per
+  repo, commits not in a pull request (the user's non-merge commits on any
+  local branch whose branch is not a PR head and that no remote base branch
+  contains yet; `↑` = unpushed), own open PRs updated in the window, own
+  PRs closed in the window (`enter` opens the browser for those). Windows
+  come from `settings.liveWindowsHours` (default 12, 24, 72), picked with
+  the number keys and remembered in `ui.liveHours`. Data: `git.MyCommits`,
+  `pr.ListClosed` and the shared PR cache, loaded by `App.loadLive`; the
+  periodic refresh re-reads the commits too.
+- **Remembered views**: the master view (repos/pulls/live), the repo-screen
   mode (open work/commits/pull requests), the layout and the PR mine/all
   filter (one setting shared by the overview and the repo's PR view) are
   stored in the global config's `ui` section whenever they are switched, so new screens
@@ -62,7 +72,8 @@ namespace.
 ## Configuration
 
 - `~/.gitmaster/config.json` (global): `settings` (`showArchived`,
-  `syntaxStyle`, `refreshSeconds`), `ui` (last used views) and `environments` (directories gitmaster was opened in,
+  `syntaxStyle`, `refreshSeconds`, `liveWindowsHours`), `ui` (last used
+  views and live window) and `environments` (directories gitmaster was opened in,
   most recent first). Created on first start and re-saved so new settings
   appear with their defaults.
 - `<dir>/.gitmaster/config.json` (local): `projects` — name + list of repo

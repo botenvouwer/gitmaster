@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseNameStatus(t *testing.T) {
@@ -45,6 +46,7 @@ func TestStatusAndCommits(t *testing.T) {
 	os.Mkdir(repo, 0o755)
 	os.Mkdir(filepath.Join(root, "notarepo"), 0o755)
 	mustGit(t, repo, "init", "-q", "-b", "main")
+	mustGit(t, repo, "config", "user.email", "t@t")
 	write(t, repo, "a.txt", "one\n")
 	write(t, repo, "b.txt", "two\n")
 	mustGit(t, repo, "add", ".")
@@ -81,6 +83,13 @@ func TestStatusAndCommits(t *testing.T) {
 		t.Fatalf("rename not parsed: %+v", s.Files)
 	}
 
+	mine, err := MyCommits(repo, time.Now().Add(-time.Hour))
+	if err != nil || len(mine) != 1 || mine[0].Branch != "main" || !mine[0].Unpushed {
+		t.Fatalf("MyCommits = %+v, %v", mine, err)
+	}
+	if old, _ := MyCommits(repo, time.Now().Add(time.Hour)); len(old) != 0 {
+		t.Fatalf("MyCommits in the future = %+v", old)
+	}
 	commits, err := Commits(repo, 10)
 	if err != nil || len(commits) != 1 || commits[0].Subject != "first" || !commits[0].Unpushed {
 		t.Fatalf("Commits = %+v, %v", commits, err)

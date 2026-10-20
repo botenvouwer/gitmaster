@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,6 +57,8 @@ type Commit struct {
 	When     time.Time
 	Subject  string
 	Unpushed bool
+	Branch   string // the local branch the commit was found on (MyCommits)
+	OnBase   bool   // reachable from a remote base branch, i.e. already merged (MyCommits)
 }
 
 // ScanRepos returns the immediate subdirectories of root that are git repos.
@@ -220,6 +223,72 @@ func Commits(dir string, limit int) ([]Commit, error) {
 		commits = append(commits, Commit{
 			SHA: p[0], Short: p[1], Author: p[2], When: time.Unix(ts, 0), Subject: p[4],
 			Unpushed: unpushed[p[0]],
+		})
+	}
+	return commits, nil
+}
+
+// baseBranches are the remote branches that pull requests usually target;
+// commits reachable from them count as merged.
+var baseBranches = []string{"master", "main", "develop", "development"}
+
+// MyCommits lists the current user's non-merge commits on any local branch
+// since the given time, newest first, each tagged with the branch it was
+// reached from and whether a remote base branch already contains it.
+func MyCommits(dir string, since time.Time) ([]Commit, error) {
+	args := []string{"log", "--branches", "--source", "--no-merges",
+		"--since=" + strconv.FormatInt(since.Unix(), 10),
+		"--format=%H%x1f%h%x1f%an%x1f%ct%x1f%s%x1f%S%x1e"}
+	authors := 0
+	for _, key := range []string{"user.email", "user.name"} {
+		if v, _ := run(dir, "config", key); strings.TrimSpace(v) != "" {
+			args = append(args, "--author="+regexp.QuoteMeta(strings.TrimSpace(v)))
+			authors++
+		}
+	}
+	if authors == 0 {
+		return nil, fmt.Errorf("git user not configured")
+	}
+	out, err := run(dir, args...)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not have any commits") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	unpushed := map[string]bool{}
+	if rl, err := run(dir, "rev-list", "--branches", "--not", "--remotes"); err == nil {
+		for _, sha := range strings.Fields(rl) {
+			unpushed[sha] = true
+		}
+	}
+	onBase := map[string]bool{}
+	baseArgs := []string{"rev-list", "--ignore-missing", "--since=" + strconv.FormatInt(since.Unix(), 10)}
+	if head, err := run(dir, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"); err == nil && strings.TrimSpace(head) != "" {
+		baseArgs = append(baseArgs, strings.TrimSpace(head))
+	}
+	for _, b := range baseBranches {
+		baseArgs = append(baseArgs, "refs/remotes/origin/"+b)
+	}
+	if rl, err := run(dir, baseArgs...); err == nil {
+		for _, sha := range strings.Fields(rl) {
+			onBase[sha] = true
+		}
+	}
+	var commits []Commit
+	for _, rec := range strings.Split(out, "\x1e") {
+		rec = strings.TrimSpace(rec)
+		if rec == "" {
+			continue
+		}
+		p := strings.SplitN(rec, "\x1f", 6)
+		if len(p) != 6 {
+			continue
+		}
+		ts, _ := strconv.ParseInt(p[3], 10, 64)
+		commits = append(commits, Commit{
+			SHA: p[0], Short: p[1], Author: p[2], When: time.Unix(ts, 0), Subject: p[4],
+			Unpushed: unpushed[p[0]], Branch: strings.TrimPrefix(p[5], "refs/heads/"), OnBase: onBase[p[0]],
 		})
 	}
 	return commits, nil

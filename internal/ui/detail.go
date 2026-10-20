@@ -116,7 +116,8 @@ type detailView struct {
 	msgMode  bool    // content-first: show the change's message (list focused last) instead of a file
 	showAlt  [4]bool // per mode: alternate content rendering (d toggles)
 	mineOnly bool
-	openPR   int // select this pull request once the list is rendered
+	openPR   int    // select this pull request once the list is rendered
+	openSHA  string // select this commit once the list is rendered
 
 	workFiles   []git.File
 	commits     []git.Commit
@@ -720,10 +721,13 @@ func (d *detailView) renderChangeList() {
 func (d *detailView) renderCommits() {
 	d.list.Clear()
 	header(d.list, "SHA", "", "AGE", "AUTHOR", "SUBJECT")
-	row := 1
+	row, selectRow := 1, 0
 	for i, c := range d.commits {
 		if !d.filter.match(c.Short, c.Author, c.Subject) {
 			continue
+		}
+		if c.SHA == d.openSHA {
+			selectRow = row
 		}
 		d.list.SetCell(row, 0, tview.NewTableCell(c.Short).SetTextColor(colorSHA).SetReference(i))
 		mark := tview.NewTableCell("").SetTextColor(colorDirty)
@@ -741,6 +745,10 @@ func (d *detailView) renderCommits() {
 		more = "+"
 	}
 	d.finishLeft(fmt.Sprintf(" Commits[%d%s]", row-1, more), row-1, "no commits")
+	if selectRow > 0 {
+		d.list.Select(selectRow, 0)
+	}
+	d.openSHA = ""
 }
 
 func (d *detailView) renderPRs() {

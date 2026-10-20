@@ -34,6 +34,9 @@ type Settings struct {
 	// RefreshSeconds is how often the repos on screen get a fresh git status
 	// (branch, ahead/behind, staged/modified/untracked, state). 0 disables it.
 	RefreshSeconds int `json:"refreshSeconds"`
+	// LiveWindowsHours are the time windows the live status screen can show,
+	// chosen with the number keys 1, 2, 3, ... in that order.
+	LiveWindowsHours []int `json:"liveWindowsHours"`
 }
 
 // Defaults for settings that are missing from the file.
@@ -41,6 +44,9 @@ const (
 	DefaultSyntaxStyle    = "monokai"
 	DefaultRefreshSeconds = 1
 )
+
+// DefaultLiveWindowsHours is used when the setting is empty: 12h, 24h, 3 days.
+var DefaultLiveWindowsHours = []int{12, 24, 72}
 
 // Environment is a directory gitmaster has been opened in that contained repos.
 type Environment struct {
@@ -55,6 +61,7 @@ type UIState struct {
 	DetailView string `json:"detailView"` // "open work", "commits" or "pull requests"
 	PRFilter   string `json:"prFilter"`   // "all" or "mine", shared by the PR overview and the repo's PR view
 	Layout     string `json:"layout"`     // repo screen layout for commits/PRs: "default", "files first", "content first"
+	LiveHours  int    `json:"liveHours"`  // live status window; one of settings.liveWindowsHours
 }
 
 // MineOnly reports whether pull-request lists should show only the user's own.
@@ -92,7 +99,7 @@ func LoadGlobal() (*Global, error) {
 		return nil, err
 	}
 	g := &Global{
-		Settings:     Settings{SyntaxStyle: DefaultSyntaxStyle, RefreshSeconds: DefaultRefreshSeconds},
+		Settings:     Settings{SyntaxStyle: DefaultSyntaxStyle, RefreshSeconds: DefaultRefreshSeconds, LiveWindowsHours: append([]int{}, DefaultLiveWindowsHours...)},
 		Environments: []Environment{},
 		path:         filepath.Join(dir, "config.json"),
 	}
@@ -101,6 +108,9 @@ func LoadGlobal() (*Global, error) {
 	}
 	if g.Settings.SyntaxStyle == "" {
 		g.Settings.SyntaxStyle = DefaultSyntaxStyle
+	}
+	if len(g.Settings.LiveWindowsHours) == 0 {
+		g.Settings.LiveWindowsHours = append([]int{}, DefaultLiveWindowsHours...)
 	}
 	// Write back so newly added settings show up in the file with defaults.
 	return g, g.Save()
