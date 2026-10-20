@@ -360,17 +360,8 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 					case liveOpenPR, liveClosedPR:
 						m.openBrowser(ref.pr.URL)
 					case liveCommit:
-						dir, sha := ref.repo.path, ref.commit.SHA
-						m.app.openURL(func() (string, error) {
-							remote, err := pr.Detect(dir)
-							if err != nil {
-								return "", err
-							}
-							if u := pr.CommitURL(remote, sha); u != "" {
-								return u, nil
-							}
-							return "", fmt.Errorf("no web url known for %s", remote.Host)
-						})
+						dir, c := ref.repo.path, ref.commit
+						m.app.openURL(func() (string, error) { return commitURL(dir, c) })
 					}
 				}
 				return nil

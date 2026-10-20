@@ -898,16 +898,7 @@ func (d *detailView) commitChange(c git.Commit) *change {
 	}
 	return &change{
 		key: c.SHA, label: c.Short,
-		url: func() (string, error) {
-			remote, err := pr.Detect(dir)
-			if err != nil {
-				return "", err
-			}
-			if u := pr.CommitURL(remote, c.SHA); u != "" {
-				return u, nil
-			}
-			return "", fmt.Errorf("no web url known for %s", remote.Host)
-		},
+		url: func() (string, error) { return commitURL(dir, c) },
 		files: func() ([]git.ChangedFile, error) { return git.CommitFiles(dir, c.SHA) },
 		fileText: func(f git.ChangedFile, full bool) (string, error) {
 			out, err := git.CommitFileDiff(dir, c.SHA, f, full)
@@ -1058,6 +1049,21 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 		f := d.curFiles[i]
 		return fmt.Sprintf(" %s: %s [%s] ", ch.label, f.Path, fileLabel), func() (string, error) { return ch.fileText(f, alt) }
 	}
+}
+
+// commitURL resolves a commit's web page; unpushed commits have none yet.
+func commitURL(dir string, c git.Commit) (string, error) {
+	if c.Unpushed {
+		return "", fmt.Errorf("%s is not pushed yet", c.Short)
+	}
+	remote, err := pr.Detect(dir)
+	if err != nil {
+		return "", err
+	}
+	if u := pr.CommitURL(remote, c.SHA); u != "" {
+		return u, nil
+	}
+	return "", fmt.Errorf("no web url known for %s", remote.Host)
 }
 
 func prDetails(p pr.PR) string {
