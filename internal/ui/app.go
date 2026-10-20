@@ -51,6 +51,8 @@ type App struct {
 	modal        bool
 	showArchived bool
 	syntaxStyle  string
+	refreshEvery time.Duration
+	refreshing   bool
 	prevFocus    tview.Primitive
 }
 
@@ -60,9 +62,11 @@ func New(dir, version string) *App {
 	a.env = &environment{dir: dir}
 	a.global, a.globalErr = config.LoadGlobal()
 	a.syntaxStyle = config.DefaultSyntaxStyle
+	a.refreshEvery = config.DefaultRefreshSeconds * time.Second
 	if a.global != nil {
 		a.showArchived = a.global.Settings.ShowArchived
 		a.syntaxStyle = a.global.Settings.SyntaxStyle
+		a.refreshEvery = time.Duration(a.global.Settings.RefreshSeconds) * time.Second
 	}
 
 	a.infoTV = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
@@ -114,6 +118,7 @@ func (a *App) Run() error {
 		a.FlashErr(a.globalErr)
 	}
 	a.scan(false)
+	a.startAutoRefresh()
 	return a.Application.Run()
 }
 

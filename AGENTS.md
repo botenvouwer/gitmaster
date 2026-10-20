@@ -16,6 +16,11 @@ namespace.
   The flag comes from `gh repo view --json isArchived` / the `(archived)`
   heading of `tea repos owner/repo`, is checked in the background with a
   24h TTL, and is stored in the scan cache.
+- **Live state**: every `settings.refreshSeconds` (default 1, 0 = off) the
+  repos on the current screen get a fresh `git status` in the background
+  (`App.refreshStatuses` in `env.go`); tables re-render only when something
+  changed, the open-work file list follows the working tree. Views opt in via
+  `refreshTargets()`.
 - **Syntax colouring**: file content and diff context lines are coloured by
   language with chroma (`internal/ui/highlight.go`), JSON and YAML included.
   `settings.syntaxStyle` picks the chroma style (default `monokai`).
@@ -38,7 +43,7 @@ namespace.
 ## Configuration
 
 - `~/.gitmaster/config.json` (global): `settings` (`showArchived`,
-  `syntaxStyle`) and `environments` (directories gitmaster was opened in,
+  `syntaxStyle`, `refreshSeconds`) and `environments` (directories gitmaster was opened in,
   most recent first). Created on first start and re-saved so new settings
   appear with their defaults.
 - `<dir>/.gitmaster/config.json` (local): `projects` — name + list of repo

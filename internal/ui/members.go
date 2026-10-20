@@ -32,6 +32,7 @@ func (v *membersView) focusTarget() tview.Primitive { return v.table }
 func (v *membersView) escape() bool                 { return v.clear() }
 func (v *membersView) start()                       { v.rebuild() }
 func (v *membersView) update()                      { v.rebuild() }
+func (v *membersView) refreshTargets() []*repoEntry { return v.app.visible(v.app.env.repos) }
 
 func (v *membersView) hotkeys() []hotkey {
 	return []hotkey{

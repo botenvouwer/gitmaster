@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/botenvouwer/gitmaster/internal/config"
@@ -268,6 +270,92 @@ func (a *App) notify() {
 		v.update()
 	}
 	a.refresh()
+}
+
+// refresher is implemented by views that show live repo state.
+type refresher interface {
+	refreshTargets() []*repoEntry
+}
+
+// startAutoRefresh re-reads git status for the repos on screen every
+// refreshEvery, re-rendering only when something changed.
+func (a *App) startAutoRefresh() {
+	if a.refreshEvery <= 0 {
+		return
+	}
+	go func() {
+		for range time.Tick(a.refreshEvery) {
+			a.QueueUpdateDraw(a.refreshStatuses)
+		}
+	}()
+}
+
+// refreshStatuses runs on the UI goroutine; the git work happens in the
+// background and a tick is skipped while the previous one is still running.
+func (a *App) refreshStatuses() {
+	if a.refreshing || a.env.pending > 0 {
+		return
+	}
+	v, ok := a.top().(refresher)
+	if !ok {
+		return
+	}
+	targets := v.refreshTargets()
+	if len(targets) == 0 {
+		return
+	}
+	e := a.env
+	gen := e.gen
+	a.refreshing = true
+	go func() {
+		type result struct {
+			status git.Status
+			err    error
+		}
+		results := make([]result, len(targets))
+		sem := make(chan struct{}, 8)
+		var wg sync.WaitGroup
+		for i, r := range targets {
+			wg.Add(1)
+			go func(i int, r *repoEntry) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				st, err := git.GetStatus(r.path)
+				results[i] = result{st, err}
+			}(i, r)
+		}
+		wg.Wait()
+		a.QueueUpdateDraw(func() {
+			a.refreshing = false
+			if gen != e.gen {
+				return
+			}
+			changed := false
+			for i, r := range targets {
+				res := results[i]
+				if res.err == nil && r.loaded && r.err == nil && statusKey(res.status) == statusKey(r.status) {
+					continue
+				}
+				r.status, r.err, r.loaded = res.status, res.err, true
+				changed = true
+			}
+			if changed {
+				a.notify()
+			}
+		})
+	}()
+}
+
+// statusKey captures everything the tables show, for change detection.
+func statusKey(s git.Status) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%s|%d|%d|%d|%d|%d|%d|%d|%s|", s.Branch, s.Upstream, s.Ahead, s.Behind,
+		s.Staged, s.Modified, s.Untracked, s.Conflicted, s.LastCommit.Unix(), s.LastSubject)
+	for _, f := range s.Files {
+		b.WriteString(f.XY + f.Path + "\x00")
+	}
+	return b.String()
 }
 
 func fromCache(c config.RepoCache) git.Status {

@@ -32,7 +32,8 @@ scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
 ## Files
 
 - `~/.gitmaster/config.json` — settings (`showArchived`, `syntaxStyle` for the
-  code colours, any chroma style name) and the directories you opened.
+  code colours, any chroma style name, `refreshSeconds` for the live status
+  refresh, 0 to disable) and the directories you opened.
 - `<dir>/.gitmaster/config.json` — the projects defined for that directory.
 - `<dir>/.gitmaster/cache.json` — last scan and remote facts (archived), shown
   until fresh data arrives.

@@ -35,6 +35,7 @@ func (h *homeView) focusTarget() tview.Primitive { return h.table }
 func (h *homeView) escape() bool                 { return h.clear() }
 func (h *homeView) start()                       { h.rebuild() }
 func (h *homeView) update()                      { h.rebuild() }
+func (h *homeView) refreshTargets() []*repoEntry { return h.app.visible(h.app.env.repos) }
 
 func (h *homeView) hotkeys() []hotkey {
 	return []hotkey{

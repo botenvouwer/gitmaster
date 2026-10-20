@@ -78,9 +78,41 @@ func newDetail(a *App, r *repoEntry) *detailView {
 	return d
 }
 
-func (d *detailView) crumbs() []string { return []string{d.repo.name, d.mode.String()} }
-func (d *detailView) escape() bool     { return d.filter.clear() }
-func (d *detailView) update()          {}
+func (d *detailView) crumbs() []string             { return []string{d.repo.name, d.mode.String()} }
+func (d *detailView) escape() bool                 { return d.filter.clear() }
+func (d *detailView) refreshTargets() []*repoEntry { return []*repoEntry{d.repo} }
+
+// update picks up a refreshed status: the header always, the file list in
+// open-work mode when it changed (keeping the selected file).
+func (d *detailView) update() {
+	if d.mode != modeWork || d.repo.err != nil || sameFiles(d.files, d.repo.status.Files) {
+		return
+	}
+	selected := ""
+	if i := d.selectedIndex(); i >= 0 && i < len(d.files) {
+		selected = d.files[i].Path
+	}
+	d.files = d.repo.status.Files
+	d.renderFiles()
+	for row := 1; row < d.left.GetRowCount(); row++ {
+		if i, ok := d.left.GetCell(row, 0).GetReference().(int); ok && d.files[i].Path == selected {
+			d.left.Select(row, 0)
+			break
+		}
+	}
+}
+
+func sameFiles(a, b []git.File) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 func (d *detailView) focusTarget() tview.Primitive {
 	if d.focusRight {

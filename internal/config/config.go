@@ -31,10 +31,16 @@ type Settings struct {
 	// SyntaxStyle is the chroma style used to colour code (e.g. monokai,
 	// dracula, github-dark, solarized-dark).
 	SyntaxStyle string `json:"syntaxStyle"`
+	// RefreshSeconds is how often the repos on screen get a fresh git status
+	// (branch, ahead/behind, staged/modified/untracked, state). 0 disables it.
+	RefreshSeconds int `json:"refreshSeconds"`
 }
 
-// DefaultSyntaxStyle is used when the setting is empty.
-const DefaultSyntaxStyle = "monokai"
+// Defaults for settings that are missing from the file.
+const (
+	DefaultSyntaxStyle    = "monokai"
+	DefaultRefreshSeconds = 1
+)
 
 // Environment is a directory gitmaster has been opened in that contained repos.
 type Environment struct {
@@ -64,7 +70,11 @@ func LoadGlobal() (*Global, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Global{Settings: Settings{SyntaxStyle: DefaultSyntaxStyle}, Environments: []Environment{}, path: filepath.Join(dir, "config.json")}
+	g := &Global{
+		Settings:     Settings{SyntaxStyle: DefaultSyntaxStyle, RefreshSeconds: DefaultRefreshSeconds},
+		Environments: []Environment{},
+		path:         filepath.Join(dir, "config.json"),
+	}
 	if err := load(g.path, g); err != nil {
 		return nil, err
 	}

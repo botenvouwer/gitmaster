@@ -56,6 +56,7 @@ func (m *masterView) crumbs() []string {
 func (m *masterView) focusTarget() tview.Primitive { return m.table }
 func (m *masterView) start()                       { m.rebuild() }
 func (m *masterView) update()                      { m.rebuild() }
+func (m *masterView) refreshTargets() []*repoEntry { return m.repos() }
 func (m *masterView) escape() bool                 { return m.clear() }
 
 func (m *masterView) hotkeys() []hotkey {
