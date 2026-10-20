@@ -206,9 +206,11 @@ func GetStatus(dir string) (Status, error) {
 	return s, nil
 }
 
+const logFormat = "--format=%H%x1f%h%x1f%an%x1f%ct%x1f%s%x1e"
+
 // Commits lists the most recent commits on HEAD, flagging those not on any remote.
 func Commits(dir string, limit int) ([]Commit, error) {
-	out, err := run(dir, "log", fmt.Sprintf("-n%d", limit), "--format=%H%x1f%h%x1f%an%x1f%ct%x1f%s%x1e")
+	out, err := run(dir, "log", fmt.Sprintf("-n%d", limit), logFormat)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not have any commits") {
 			return nil, nil
@@ -221,6 +223,20 @@ func Commits(dir string, limit int) ([]Commit, error) {
 			unpushed[sha] = true
 		}
 	}
+	return parseLog(out, unpushed), nil
+}
+
+// RangeCommits lists the commits reachable from head but not from base,
+// newest first: the commits of a pull request.
+func RangeCommits(dir, baseRef, headRef string) ([]Commit, error) {
+	out, err := run(dir, "log", logFormat, baseRef+".."+headRef)
+	if err != nil {
+		return nil, err
+	}
+	return parseLog(out, nil), nil
+}
+
+func parseLog(out string, unpushed map[string]bool) []Commit {
 	var commits []Commit
 	for _, rec := range strings.Split(out, "\x1e") {
 		rec = strings.TrimSpace(rec)
@@ -237,7 +253,7 @@ func Commits(dir string, limit int) ([]Commit, error) {
 			Unpushed: unpushed[p[0]],
 		})
 	}
-	return commits, nil
+	return commits
 }
 
 // baseBranches are the remote branches that pull requests usually target;

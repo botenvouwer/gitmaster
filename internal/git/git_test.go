@@ -117,6 +117,20 @@ func TestStatusAndCommits(t *testing.T) {
 	if err != nil || content != "changed\n" {
 		t.Fatalf("FileContent = %q, %v", content, err)
 	}
+
+	// A branch with two commits on top of main: its commits, oldest last.
+	mustGit(t, repo, "stash", "-u", "-q")
+	mustGit(t, repo, "checkout", "-q", "-b", "feature")
+	write(t, repo, "f1.txt", "1\n")
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-q", "-m", "feature one")
+	write(t, repo, "f2.txt", "2\n")
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-q", "-m", "feature two")
+	rc, err := RangeCommits(repo, "main", "feature")
+	if err != nil || len(rc) != 2 || rc[0].Subject != "feature two" || rc[1].Subject != "feature one" {
+		t.Fatalf("RangeCommits = %+v, %v", rc, err)
+	}
 }
 
 // TestTimeout: a git command that hangs (here: a fsmonitor hook that never

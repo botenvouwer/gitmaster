@@ -22,6 +22,7 @@ type filterBox struct {
 
 func newFilterBox(a *App, table *tview.Table, onChange func()) *filterBox {
 	f := &filterBox{Flex: tview.NewFlex().SetDirection(tview.FlexRow), app: a, table: table, onChange: onChange}
+	selectOnScroll(table)
 	f.input = tview.NewInputField().SetLabel(" /> ").SetLabelColor(colorKey).
 		SetFieldBackgroundColor(tcell.ColorBlack).SetFieldTextColor(colorValue)
 	f.input.SetChangedFunc(func(text string) {

@@ -26,3 +26,28 @@ func hasSelectable(t *tview.Table) bool {
 	}
 	return false
 }
+
+// selectOnScroll makes the mouse wheel (and a trackpad's two-finger scroll)
+// move the selection of a table one row at a time, k9s-style. tview only
+// scrolls the viewport, which shows nothing on a table that fits on screen.
+func selectOnScroll(t *tview.Table) {
+	t.SetMouseCapture(func(action tview.MouseAction, ev *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		delta := 0
+		switch action {
+		case tview.MouseScrollUp:
+			delta = -1
+		case tview.MouseScrollDown:
+			delta = 1
+		default:
+			return action, ev
+		}
+		if x, y := ev.Position(); !t.InRect(x, y) {
+			return action, ev
+		}
+		if hasSelectable(t) {
+			row, _ := t.GetSelection()
+			t.Select(max(1, min(t.GetRowCount()-1, row+delta)), 0)
+		}
+		return tview.MouseConsumed, nil
+	})
+}

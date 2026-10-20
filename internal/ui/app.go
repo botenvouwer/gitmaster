@@ -56,6 +56,7 @@ type App struct {
 	dirty        bool      // a notify is scheduled (markDirty)
 	rendered     time.Time // last notify
 	prevFocus    tview.Primitive
+	downX, downY int // where the primary button went down (mouseCapture)
 }
 
 // New builds the application for the given directory.
@@ -110,6 +111,7 @@ func New(dir, version string) *App {
 
 	a.SetRoot(root, true).EnableMouse(true)
 	a.SetInputCapture(a.globalKeys)
+	a.SetMouseCapture(a.mouseCapture)
 	if screen, err := tcell.NewScreen(); err == nil {
 		a.screen = screen // kept for the OSC 52 clipboard fallback
 		a.SetScreen(screen)
@@ -308,6 +310,25 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	return ev
+}
+
+// mouseCapture turns a press and release that land on different cells
+// into a click at the press position, within a small tolerance. tview only
+// fires a click when both land on the same cell, which a trackpad press
+// (the finger rolls a little) regularly misses, so taps did nothing.
+func (a *App) mouseCapture(ev *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+	x, y := ev.Position()
+	switch action {
+	case tview.MouseLeftDown:
+		a.downX, a.downY = x, y
+	case tview.MouseLeftUp:
+		dx, dy := x-a.downX, y-a.downY
+		moved := dx != 0 || dy != 0
+		if moved && dx >= -3 && dx <= 3 && dy >= -1 && dy <= 1 {
+			return tcell.NewEventMouse(a.downX, a.downY, ev.Buttons(), ev.Modifiers()), tview.MouseLeftClick
+		}
+	}
+	return ev, action
 }
 
 func (a *App) toggleHelp() {

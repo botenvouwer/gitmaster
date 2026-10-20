@@ -75,6 +75,11 @@ namespace.
     `d` toggles to full-file view (`-U999999`).
   - **pull requests** (`3`): open PRs on `origin`; right pane shows details,
     `d` toggles to the PR diff; `m` toggles mine/all; `o` opens in browser.
+    Enter pushes the **commits of the PR** (`modePRCommits`,
+    `newPRCommitsView`: `git log base..head` on the PR refs via
+    `change.commits`), which behaves like the commits mode: diff on the
+    right, `d` full file, `v` layouts, Enter the files of one commit. `f`
+    (there and in the PR list) pushes the files of the whole PR.
   - Commits and PRs are "changes" (`change` struct in `detail.go`): a file
     list (`--name-status`), a per-file diff / full view and a message view.
     `v` cycles the **layout**, remembered in `ui.layout`:
@@ -159,7 +164,12 @@ Headless UI checks: run the binary in a detached tmux session and use
 ## Gotchas
 
 - Mouse support is on, so terminal text selection needs the terminal's
-  override modifier (Option on macOS Terminal/iTerm).
+  override modifier (Option on macOS Terminal/iTerm). Trackpads: tview fires
+  a click only when press and release hit the same cell, which a trackpad
+  press often misses, so `App.mouseCapture` turns a release within 3
+  columns / 1 row of the press into a click at the press position; and
+  since tview's wheel handling only scrolls the viewport, `selectOnScroll`
+  (`table.go`, applied to every table) moves the selection instead.
 - Shift+arrow depends on the terminal sending modifier escape sequences;
   `J`/`K` are the keyboard-independent fallback for 5-line moves.
 - "Mine" for Gitea PRs is matched heuristically on the display name, since

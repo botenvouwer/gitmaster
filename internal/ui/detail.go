@@ -22,7 +22,8 @@ const (
 	modeWork mode = iota
 	modeCommits
 	modePRs
-	modeChange // the files of one commit or pull request (pushed with Enter)
+	modeChange    // the files of one commit or pull request (pushed with Enter)
+	modePRCommits // the commits of one pull request (pushed with Enter on a PR)
 )
 
 func (m mode) String() string {
@@ -33,6 +34,8 @@ func (m mode) String() string {
 		return "pull requests"
 	case modeChange:
 		return "change"
+	case modePRCommits:
+		return "commits"
 	}
 	return "open work"
 }
@@ -91,11 +94,12 @@ type change struct {
 	key, label string
 	files      func() ([]git.ChangedFile, error)
 	fileText   func(f git.ChangedFile, full bool) (string, error)
-	message    func() (string, error) // header/message/stat (content-first, list focused)
-	primary    func() (string, error) // default layout content
-	alt        func() (string, error) // default layout content after d
-	labels     [2]string              // titles for primary / alt
-	url        func() (string, error) // web page of the change
+	message    func() (string, error)       // header/message/stat (content-first, list focused)
+	primary    func() (string, error)       // default layout content
+	alt        func() (string, error)       // default layout content after d
+	labels     [2]string                    // titles for primary / alt
+	url        func() (string, error)       // web page of the change
+	commits    func() ([]git.Commit, error) // pull requests: their commits
 }
 
 // detailView shows one repo: a list on the left (open-work files, commits or
@@ -107,7 +111,7 @@ type detailView struct {
 	repo   *repoEntry
 	mode   mode
 	layout layout
-	fixed  *change // modeChange: the change whose files are listed
+	fixed  *change // modeChange: the change whose files are listed; modePRCommits: the pull request
 
 	list    *tview.Table
 	filter  *filterBox
@@ -117,7 +121,7 @@ type detailView struct {
 	order    []pane
 	focus    pane
 	msgMode  bool    // content-first: show the change's message (list focused last) instead of a file
-	showAlt  [4]bool // per mode: alternate content rendering (d toggles)
+	showAlt  [5]bool // per mode: alternate content rendering (d toggles)
 	mineOnly bool
 	openPR   int    // select this pull request once the list is rendered
 	openSHA  string // select this commit once the list is rendered
@@ -163,6 +167,19 @@ func newChangeView(a *App, r *repoEntry, ch *change) *detailView {
 	return d
 }
 
+// newPRCommitsView lists the commits of one pull request like the commits
+// mode: content on the right, Enter opens a commit's files, f the files of
+// the whole pull request.
+func newPRCommitsView(a *App, r *repoEntry, ch *change) *detailView {
+	d := &detailView{
+		Flex: tview.NewFlex(), app: a, repo: r, mode: modePRCommits, fixed: ch,
+		layout:     parseLayout(a.ui().Layout),
+		filesCache: map[string][]git.ChangedFile{}, prRefs: map[int][2]string{},
+	}
+	d.build()
+	return d
+}
+
 func (d *detailView) build() {
 	d.list = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false)
 	d.list.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
@@ -179,6 +196,7 @@ func (d *detailView) build() {
 		}
 	})
 	d.files.SetInputCapture(d.keys)
+	selectOnScroll(d.files)
 	d.files.SetFocusFunc(func() { d.onFocus(paneFiles) })
 
 	d.content = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
@@ -191,7 +209,7 @@ func (d *detailView) build() {
 
 // threePane reports whether the files pane is part of the layout.
 func (d *detailView) threePane() bool {
-	return (d.mode == modeCommits || d.mode == modePRs) && d.layout != layoutDefault
+	return (d.mode == modeCommits || d.mode == modePRs || d.mode == modePRCommits) && d.layout != layoutDefault
 }
 
 func (d *detailView) buildLayout() {
@@ -215,6 +233,9 @@ func (d *detailView) buildLayout() {
 func (d *detailView) crumbs() []string {
 	if d.mode == modeChange {
 		return []string{d.fixed.label}
+	}
+	if d.mode == modePRCommits {
+		return []string{d.fixed.label + " commits"}
 	}
 	return []string{d.repo.name, d.mode.String()}
 }
@@ -251,6 +272,19 @@ func (d *detailView) hotkeys() []hotkey {
 			{"esc", "back"},
 		}
 	}
+	if d.mode == modePRCommits {
+		return []hotkey{
+			{"enter", "files of commit"},
+			{"f", "files of pull request"},
+			{"d", "diff / full file"},
+			{"v", "layout"},
+			{"←/→", "switch pane"},
+			{"c", "copy hash"},
+			{"o", "open in browser"},
+			{"/", "filter"},
+			{"esc", "back"},
+		}
+	}
 	keys := []hotkey{
 		{"1", "open work"},
 		{"2", "commits"},
@@ -267,8 +301,8 @@ func (d *detailView) hotkeys() []hotkey {
 		keys = append(keys, hotkey{"enter", "files of commit"}, hotkey{"d", "diff / full file"}, hotkey{"v", "layout"},
 			hotkey{"o", "open in browser"})
 	case modePRs:
-		keys = append(keys, hotkey{"enter", "files of PR"}, hotkey{"d", "details / diff"}, hotkey{"v", "layout"},
-			hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
+		keys = append(keys, hotkey{"enter", "commits of PR"}, hotkey{"f", "files of PR"}, hotkey{"d", "details / diff"},
+			hotkey{"v", "layout"}, hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
 	}
 	return keys
 }
@@ -284,15 +318,18 @@ func (d *detailView) info() [][2]string {
 		{"Branch", branch},
 		{"Sync", fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind)},
 	}
-	if d.mode == modeChange {
+	switch d.mode {
+	case modeChange:
 		return append(rows, [2]string{"Change", d.fixed.label})
+	case modePRCommits:
+		return append(rows, [2]string{"PR", d.fixed.label}, [2]string{"Layout", d.layout.String()})
 	}
 	return append(rows, [2]string{"Layout", d.layout.String()})
 }
 
 func (d *detailView) start() {
-	if d.mode == modeChange {
-		d.loadLeft()
+	if d.mode == modeChange || d.mode == modePRCommits {
+		d.loadLeft() // the parent repo screen owns the PR refs
 		return
 	}
 	git.CleanPRRefs(d.repo.path) // leftovers from an earlier session
@@ -435,7 +472,7 @@ func (d *detailView) setMode(m mode) {
 }
 
 func (d *detailView) cycleLayout() {
-	if d.mode != modeCommits && d.mode != modePRs {
+	if d.mode != modeCommits && d.mode != modePRs && d.mode != modePRCommits {
 		d.app.Flash("layouts apply to commits and pull requests")
 		return
 	}
@@ -525,7 +562,9 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		d.moveFocus(-1, true)
 		return nil
 	case tcell.KeyEnter:
-		if d.focus == paneList && !d.threePane() {
+		if d.focus == paneList && d.mode == modePRs {
+			d.openPRCommits()
+		} else if d.focus == paneList && !d.threePane() {
 			d.openChange()
 		}
 		return nil
@@ -537,7 +576,7 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyRune:
 		switch ev.Rune() {
 		case '1', '2', '3':
-			if d.mode == modeChange {
+			if d.mode == modeChange || d.mode == modePRCommits {
 				return nil
 			}
 			d.setMode(map[rune]mode{'1': modeWork, '2': modeCommits, '3': modePRs}[ev.Rune()])
@@ -548,6 +587,13 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 			d.cycleLayout()
+		case 'f':
+			switch d.mode {
+			case modePRCommits:
+				d.app.push(newChangeView(d.app, d.repo, d.fixed))
+			case modePRs:
+				d.openChange()
+			}
 		case '/':
 			d.setFocus(paneList)
 			d.filter.show(true)
@@ -566,11 +612,14 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			if d.mode != modeChange {
 				ch = d.selectedChange()
 			}
+			if d.mode == modePRCommits && ch == nil {
+				ch = d.fixed
+			}
 			if ch != nil {
 				d.app.openURL(ch.url)
 			}
 		case 'r':
-			if d.mode != modeChange {
+			if d.mode != modeChange && d.mode != modePRCommits {
 				d.reload()
 			}
 		case 'J':
@@ -633,7 +682,7 @@ func (d *detailView) copySelected() {
 			d.app.copyText("path", d.curFiles[i].Path)
 			return
 		}
-	case d.mode == modeCommits:
+	case d.mode == modeCommits || d.mode == modePRCommits:
 		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.commits) {
 			d.app.copyText("commit", d.commits[i].SHA)
 			return
@@ -645,6 +694,13 @@ func (d *detailView) copySelected() {
 		}
 	}
 	d.app.Flash("nothing to copy")
+}
+
+// openPRCommits pushes the commits of the selected pull request.
+func (d *detailView) openPRCommits() {
+	if ch := d.selectedChange(); ch != nil {
+		d.app.push(newPRCommitsView(d.app, d.repo, ch))
+	}
 }
 
 // openChange pushes the files of the selected commit or PR as its own page.
@@ -693,6 +749,20 @@ func (d *detailView) loadLeft() {
 			return
 		}
 		d.app.loadPRs([]*repoEntry{d.repo}, false) // update() renders it
+	case modePRCommits:
+		go func() {
+			commits, err := d.fixed.commits()
+			d.app.QueueUpdateDraw(func() {
+				if gen != d.leftGen {
+					return
+				}
+				if err != nil {
+					d.app.FlashErr(err)
+				}
+				d.commits = commits
+				d.renderCommits()
+			})
+		}()
 	case modeChange:
 		if cached, ok := d.filesCache[d.fixed.key]; ok {
 			d.curFiles = cached
@@ -721,7 +791,7 @@ func (d *detailView) renderLeft() {
 	switch d.mode {
 	case modeWork:
 		d.renderWork()
-	case modeCommits:
+	case modeCommits, modePRCommits:
 		d.renderCommits()
 	case modePRs:
 		d.renderPRs()
@@ -854,10 +924,14 @@ func (d *detailView) renderCommits() {
 		row++
 	}
 	more := ""
-	if len(d.commits) == commitLimit {
+	if d.mode == modeCommits && len(d.commits) == commitLimit {
 		more = "+"
 	}
-	d.finishLeft(fmt.Sprintf(" Commits[%d%s]", row-1, more), row-1, "no commits")
+	title := fmt.Sprintf(" Commits[%d%s]", row-1, more)
+	if d.mode == modePRCommits {
+		title = fmt.Sprintf(" Commits(%s)[%d]", d.fixed.label, row-1)
+	}
+	d.finishLeft(title, row-1, "no commits")
 	if selectRow > 0 {
 		d.list.Select(selectRow, 0)
 	}
@@ -984,7 +1058,7 @@ func (d *detailView) selectedPR() *pr.PR {
 func (d *detailView) selectedChange() *change {
 	i := d.selectedIndex(d.list)
 	switch d.mode {
-	case modeCommits:
+	case modeCommits, modePRCommits:
 		if i >= 0 && i < len(d.commits) {
 			return d.commitChange(d.commits[i])
 		}
@@ -1055,6 +1129,13 @@ func (d *detailView) prChange(p pr.PR) *change {
 		message: details,
 		primary: details,
 		url:     func() (string, error) { return p.URL, nil },
+		commits: func() ([]git.Commit, error) {
+			base, head, err := refs()
+			if err != nil {
+				return nil, err
+			}
+			return git.RangeCommits(dir, base, head)
+		},
 		alt: func() (string, error) {
 			base, head, err := refs()
 			if err != nil {
