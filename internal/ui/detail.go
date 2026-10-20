@@ -239,17 +239,19 @@ func (d *detailView) hotkeys() []hotkey {
 		return []hotkey{
 			{"d", "diff / full file"},
 			{"←/→", "switch pane"},
+			{"c", "copy file path"},
 			{"o", "open in browser"},
 			{"/", "filter"},
 			{"esc", "back"},
 		}
 	}
 	keys := []hotkey{
-		{"w", "open work"},
-		{"c", "commits"},
-		{"p", "pull requests"},
+		{"1", "open work"},
+		{"2", "commits"},
+		{"3", "pull requests"},
 		{"←/→", "switch pane"},
 		{"/", "filter"},
+		{"c", "copy"},
 		{"r", "reload"},
 	}
 	switch d.mode {
@@ -463,11 +465,13 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyRune:
 		switch ev.Rune() {
-		case 'w', 'c', 'p':
+		case '1', '2', '3':
 			if d.mode == modeChange {
 				return nil
 			}
-			d.setMode(map[rune]mode{'w': modeWork, 'c': modeCommits, 'p': modePRs}[ev.Rune()])
+			d.setMode(map[rune]mode{'1': modeWork, '2': modeCommits, '3': modePRs}[ev.Rune()])
+		case 'c':
+			d.copySelected()
 		case 'v':
 			if d.mode == modeChange {
 				return nil
@@ -538,6 +542,38 @@ func (d *detailView) scroll(delta int) {
 	}
 	row, _ := t.GetSelection()
 	t.Select(max(1, min(t.GetRowCount()-1, row+delta)), 0)
+}
+
+// copySelected copies the file path, commit hash or PR url under the cursor.
+func (d *detailView) copySelected() {
+	switch {
+	case d.mode == modeWork:
+		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.workFiles) {
+			d.app.copyText("path", d.workFiles[i].Path)
+			return
+		}
+	case d.mode == modeChange:
+		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.curFiles) {
+			d.app.copyText("path", d.curFiles[i].Path)
+			return
+		}
+	case d.threePane() && d.focus == paneFiles:
+		if i := d.selectedIndex(d.files); i >= 0 && i < len(d.curFiles) {
+			d.app.copyText("path", d.curFiles[i].Path)
+			return
+		}
+	case d.mode == modeCommits:
+		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.commits) {
+			d.app.copyText("commit", d.commits[i].SHA)
+			return
+		}
+	case d.mode == modePRs:
+		if p := d.selectedPR(); p != nil {
+			d.app.copyText("url", p.URL)
+			return
+		}
+	}
+	d.app.Flash("nothing to copy")
 }
 
 // openChange pushes the files of the selected commit or PR as its own page.

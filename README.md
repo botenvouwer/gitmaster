@@ -13,7 +13,7 @@ gitmaster ~/repo/x   # repos under another directory
 Every list: `/` filter by text (Enter keeps it, Esc clears it), `A` show or
 hide repos that are archived on their remote (hidden by default).
 
-Home: `enter` open live status, all repos or a project, `L` live status,
+Home: `enter` open all repos or a project, `L` live status of all repos,
 `n` new project, `e` edit a project's repos, `R` rename, `d` delete,
 `r` rescan.
 
@@ -37,7 +37,7 @@ across screens and restarts.
 
 Project repos: `space`/`enter` toggle a repo, `esc` done.
 
-Repo: `w` open work, `c` commits, `p` pull requests, `←`/`→` switch pane,
+Repo: `1` open work, `2` commits, `3` pull requests, `←`/`→` switch pane,
 `d` toggle content/diff (open work), diff/full file (commits), details/diff
 (PRs), `m` mine/all PRs, `o` open the commit or PR in the browser, `enter` on a commit or PR
 opens its files with a per-file diff, `v` cycles the layout: default
@@ -45,7 +45,8 @@ opens its files with a per-file diff, `v` cycles the layout: default
 (list | content | files, the content shows the message while the list is
 focused and the file once the files pane is).
 
-Everywhere: `↑`/`↓` one line, `shift+↑/↓` or `J`/`K` five lines, mouse wheel
+Everywhere: `c` copies the selected item (commit hash, file or repo path,
+PR url), `↑`/`↓` one line, `shift+↑/↓` or `J`/`K` five lines, mouse wheel
 scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
 
 ## Files

@@ -206,6 +206,7 @@ func (m *masterView) hotkeys() []hotkey {
 			{"enter", "open pull request"},
 			{"m", "mine / all"},
 			{"o", "open in browser"},
+			{"c", "copy url"},
 			{"/", "filter"},
 			{"A", "show / hide archived"},
 			{"r", "reload"},
@@ -215,7 +216,7 @@ func (m *masterView) hotkeys() []hotkey {
 		for i, h := range m.windows() {
 			keys = append(keys, hotkey{strconv.Itoa(i + 1), "last " + hoursLabel(h)})
 		}
-		return append(keys, hotkey{"o", "open in browser"}, hotkey{"/", "filter"}, hotkey{"r", "reload"})
+		return append(keys, hotkey{"o", "open in browser"}, hotkey{"c", "copy"}, hotkey{"/", "filter"}, hotkey{"r", "reload"})
 	}
 	keys := []hotkey{
 		{"tab", "pull requests"},
@@ -224,6 +225,7 @@ func (m *masterView) hotkeys() []hotkey {
 		{"2", "uncommitted / untracked"},
 		{"/", "filter"},
 		{"enter", "open repo"},
+		{"c", "copy path"},
 		{"a", "add to project"},
 	}
 	if m.project != "" {
@@ -322,6 +324,9 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'A':
 			m.app.toggleArchived()
 			return nil
+		case 'c':
+			m.copySelected()
+			return nil
 		case 'J':
 			m.move(5)
 			return nil
@@ -390,6 +395,35 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 	return swallowWhenEmpty(m.table, ev)
+}
+
+// copySelected copies the repo path, commit hash or PR url under the cursor.
+func (m *masterView) copySelected() {
+	switch m.view {
+	case viewPulls:
+		if _, p := m.selectedPR(); p != nil {
+			m.app.copyText("url", p.URL)
+			return
+		}
+	case viewLive:
+		if ref, ok := m.selectedLive(); ok {
+			switch ref.kind {
+			case liveCommit:
+				m.app.copyText("commit", ref.commit.SHA)
+			case liveOpenPR, liveClosedPR:
+				m.app.copyText("url", ref.pr.URL)
+			default:
+				m.app.copyText("path", ref.repo.path)
+			}
+			return
+		}
+	default:
+		if r := m.selected(); r != nil {
+			m.app.copyText("path", r.path)
+			return
+		}
+	}
+	m.app.Flash("nothing to copy")
 }
 
 func (m *masterView) openBrowser(url string) {

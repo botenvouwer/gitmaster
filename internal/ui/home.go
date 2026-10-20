@@ -10,7 +10,6 @@ import (
 
 // homeRef identifies a row of the home table.
 type homeRef struct {
-	live    bool
 	all     bool
 	project string
 }
@@ -101,8 +100,11 @@ func (h *homeView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			return nil
 		case 'L':
 			if len(e.repos) > 0 {
-				h.table.Select(1, 0)
-				h.open()
+				m := newMaster(h.app, "")
+				m.view = viewLive
+				h.app.ui().MasterView = viewLive.String()
+				h.app.saveGlobal()
+				h.app.push(m)
 			}
 			return nil
 		case 'n':
@@ -211,7 +213,6 @@ func (h *homeView) rebuild() {
 	}
 	all := h.app.visible(e.repos)
 	if len(e.repos) > 0 {
-		add(homeRef{live: true}, "live status", all, 0)
 		add(homeRef{all: true}, "all repos", all, 0)
 	}
 	for _, p := range e.projects() {
@@ -239,14 +240,6 @@ func (h *homeView) rebuild() {
 func (h *homeView) open() {
 	ref, ok := h.selected()
 	if !ok {
-		return
-	}
-	if ref.live {
-		m := newMaster(h.app, "")
-		m.view = viewLive
-		h.app.ui().MasterView = viewLive.String()
-		h.app.saveGlobal()
-		h.app.push(m)
 		return
 	}
 	if ref.all {

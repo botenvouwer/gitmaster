@@ -73,6 +73,11 @@ func (v *membersView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'A':
 			v.app.toggleArchived()
 			return nil
+		case 'c':
+			if r := v.app.env.repo(v.selectedName()); r != nil {
+				v.app.copyText("path", r.path)
+			}
+			return nil
 		case 'J':
 			v.move(5)
 			return nil

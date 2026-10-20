@@ -11,6 +11,8 @@ namespace.
   `n` new project, `e` edit a project's repos, `R` rename, `d` delete, `r` rescan.
 - **Every list** has a k9s-style `/` text filter (`internal/ui/filter.go`):
   type to narrow, Enter keeps it (shown in the title), Esc clears it.
+- **`c` copies** the selected item to the clipboard (`clipboard.go`, pbcopy
+  on macOS): commit hash, file or repo path, PR url.
 - **Archived repos** (archived on GitHub/Gitea) are hidden by default; `A`
   toggles them for the session, `settings.showArchived` sets the default.
   The flag comes from `gh repo view --json isArchived` / the `(archived)`
@@ -32,7 +34,7 @@ namespace.
   overview** of the same scope: every open PR of those repos (streamed in
   per repo, cached on the `repoEntry`), `m` mine/all, `o` browser, `enter`
   opens the repo's PR view on that PR.
-- **Live status** (`tab` on the repos screen, the top row of Home, or `L`):
+- **Live status** (`tab` on the repos screen, or `L` on Home):
   the user's work in the chosen window, in four sections: open work per
   repo, local commits (not pushed), pushed commits not in a pull request
   (both: the user's non-merge commits on any local branch whose branch is
@@ -52,11 +54,11 @@ namespace.
   membership, saved immediately.
 - **Repo detail screen** with three view modes, each a two-pane layout
   (list left, content right):
-  - **open work** (`w`): uncommitted + untracked files; right pane shows file
+  - **open work** (`1`): uncommitted + untracked files; right pane shows file
     content, `d` toggles to the diff against HEAD.
-  - **commits** (`c`): `git log` of HEAD; right pane shows `git show` (diff),
+  - **commits** (`2`): `git log` of HEAD; right pane shows `git show` (diff),
     `d` toggles to full-file view (`-U999999`).
-  - **pull requests** (`p`): open PRs on `origin`; right pane shows details,
+  - **pull requests** (`3`): open PRs on `origin`; right pane shows details,
     `d` toggles to the PR diff; `m` toggles mine/all; `o` opens in browser.
   - Commits and PRs are "changes" (`change` struct in `detail.go`): a file
     list (`--name-status`), a per-file diff / full view and a message view.

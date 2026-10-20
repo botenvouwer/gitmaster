@@ -335,6 +335,7 @@ func (a *App) toggleHelp() {
 		{"mouse wheel", "scroll"},
 	})
 	write("General", []hotkey{
+		{"c", "copy: commit hash, file/repo path or PR url"},
 		{"?", "toggle this help"},
 		{"esc", "back"},
 		{"q", "back / quit"},
