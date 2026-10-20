@@ -227,6 +227,37 @@ func isMe(login, author string) bool {
 	return true
 }
 
+// Archived reports whether the repo is archived on its remote.
+func Archived(dir string, r Remote) (bool, error) {
+	switch r.Provider {
+	case GitHub:
+		out, err := runCmd(dir, "gh", "repo", "view", r.Slug, "--json", "isArchived", "-q", ".isArchived")
+		if err != nil {
+			return false, err
+		}
+		return strings.TrimSpace(out) == "true", nil
+	case Gitea:
+		out, err := runCmd(dir, "tea", "repos", r.Slug)
+		if err != nil {
+			return false, err
+		}
+		return teaArchived(out), nil
+	}
+	return false, fmt.Errorf("unsupported provider")
+}
+
+// teaArchived reads the heading of `tea repos owner/repo`, which looks like
+// "# acme/archived (archived)".
+func teaArchived(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.HasSuffix(line, "(archived)")
+		}
+	}
+	return false
+}
+
 // OpenInBrowser opens the URL with the OS default handler.
 func OpenInBrowser(u string) error {
 	return exec.Command("open", u).Start()

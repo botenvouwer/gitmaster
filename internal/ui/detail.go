@@ -36,11 +36,12 @@ const commitLimit = 500
 // detailView shows one repo with a list on the left and content on the right.
 type detailView struct {
 	*tview.Flex
-	app   *App
-	repo  *repoEntry
-	mode  mode
-	left  *tview.Table
-	right *tview.TextView
+	app    *App
+	repo   *repoEntry
+	mode   mode
+	left   *tview.Table
+	filter *filterBox
+	right  *tview.TextView
 
 	focusRight bool
 	showAlt    [3]bool // per mode: the alternate right-pane rendering (d toggles)
@@ -66,18 +67,19 @@ func newDetail(a *App, r *repoEntry) *detailView {
 	d.left.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
 	d.left.SetSelectionChangedFunc(func(row, _ int) { d.scheduleRight() })
 	d.left.SetInputCapture(d.keys)
+	d.filter = newFilterBox(a, d.left, d.renderLeft)
 
 	d.right = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
 	d.right.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
 	d.right.SetInputCapture(d.keys)
 
-	d.AddItem(d.left, 0, 2, true).AddItem(d.right, 0, 3, false)
+	d.AddItem(d.filter, 0, 2, true).AddItem(d.right, 0, 3, false)
 	d.setFocus(false)
 	return d
 }
 
 func (d *detailView) crumbs() []string { return []string{d.repo.name, d.mode.String()} }
-func (d *detailView) escape() bool     { return false }
+func (d *detailView) escape() bool     { return d.filter.clear() }
 func (d *detailView) update()          {}
 
 func (d *detailView) focusTarget() tview.Primitive {
@@ -93,6 +95,7 @@ func (d *detailView) hotkeys() []hotkey {
 		{"c", "commits"},
 		{"p", "pull requests"},
 		{"←/→", "switch pane"},
+		{"/", "filter"},
 		{"r", "reload"},
 	}
 	switch d.mode {
@@ -144,6 +147,7 @@ func (d *detailView) setMode(m mode) {
 		return
 	}
 	d.mode = m
+	d.filter.reset()
 	d.setFocus(false)
 	d.app.refresh()
 	d.loadLeft()
@@ -187,6 +191,9 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			d.setMode(modeCommits)
 		case 'p':
 			d.setMode(modePRs)
+		case '/':
+			d.setFocus(false)
+			d.filter.show(true)
 		case 'd':
 			d.showAlt[d.mode] = !d.showAlt[d.mode]
 			d.scheduleRight()
@@ -292,6 +299,18 @@ func (d *detailView) loadLeft() {
 	}
 }
 
+// renderLeft re-renders the current mode's list from data already loaded.
+func (d *detailView) renderLeft() {
+	switch d.mode {
+	case modeWork:
+		d.renderFiles()
+	case modeCommits:
+		d.renderCommits()
+	case modePRs:
+		d.renderPRs()
+	}
+}
+
 func (d *detailView) header(cols ...string) {
 	for c, h := range cols {
 		cell := tview.NewTableCell(h).SetStyle(styleHeader).SetSelectable(false)
@@ -299,8 +318,10 @@ func (d *detailView) header(cols ...string) {
 	}
 }
 
-func (d *detailView) finishLeft(count int, empty string) {
+func (d *detailView) finishLeft(title string, count int, empty string) {
+	d.left.SetTitle(tview.Escape(title + d.filter.suffix() + " "))
 	if count == 0 {
+		d.right.SetTitle("")
 		d.right.SetText("[gray]" + tview.Escape(empty) + "[-]")
 		return
 	}
@@ -312,17 +333,20 @@ func (d *detailView) finishLeft(count int, empty string) {
 func (d *detailView) renderFiles() {
 	d.left.Clear()
 	d.header("ST", "FILE")
+	row := 1
 	for i, f := range d.files {
-		st := tview.NewTableCell(f.XY).SetTextColor(statusColor(f.XY)).SetReference(i)
 		name := f.Path
 		if f.OrigPath != "" {
 			name += " ← " + f.OrigPath
 		}
-		d.left.SetCell(i+1, 0, st)
-		d.left.SetCell(i+1, 1, tview.NewTableCell(tview.Escape(name)).SetTextColor(colorValue).SetExpansion(1))
+		if !d.filter.match(name, f.XY) {
+			continue
+		}
+		d.left.SetCell(row, 0, tview.NewTableCell(f.XY).SetTextColor(statusColor(f.XY)).SetReference(i))
+		d.left.SetCell(row, 1, tview.NewTableCell(tview.Escape(name)).SetTextColor(colorValue).SetExpansion(1))
+		row++
 	}
-	d.left.SetTitle(fmt.Sprintf(" Open Work[%d] ", len(d.files)))
-	d.finishLeft(len(d.files), "working tree clean")
+	d.finishLeft(fmt.Sprintf(" Open Work[%d]", row-1), row-1, "working tree clean")
 }
 
 func statusColor(xy string) tcell.Color {
@@ -341,51 +365,50 @@ func statusColor(xy string) tcell.Color {
 func (d *detailView) renderCommits() {
 	d.left.Clear()
 	d.header("SHA", "", "AGE", "AUTHOR", "SUBJECT")
+	row := 1
 	for i, c := range d.commits {
-		d.left.SetCell(i+1, 0, tview.NewTableCell(c.Short).SetTextColor(colorSHA).SetReference(i))
+		if !d.filter.match(c.Short, c.Author, c.Subject) {
+			continue
+		}
+		d.left.SetCell(row, 0, tview.NewTableCell(c.Short).SetTextColor(colorSHA).SetReference(i))
 		mark := tview.NewTableCell("").SetTextColor(colorDirty)
 		if c.Unpushed {
 			mark.SetText("↑")
 		}
-		d.left.SetCell(i+1, 1, mark)
-		d.left.SetCell(i+1, 2, tview.NewTableCell(age(c.When)).SetTextColor(colorMuted))
-		d.left.SetCell(i+1, 3, tview.NewTableCell(tview.Escape(trunc(c.Author, 16))).SetTextColor(colorMuted))
-		d.left.SetCell(i+1, 4, tview.NewTableCell(tview.Escape(c.Subject)).SetTextColor(colorValue).SetExpansion(1))
+		d.left.SetCell(row, 1, mark)
+		d.left.SetCell(row, 2, tview.NewTableCell(age(c.When)).SetTextColor(colorMuted))
+		d.left.SetCell(row, 3, tview.NewTableCell(tview.Escape(trunc(c.Author, 16))).SetTextColor(colorMuted))
+		d.left.SetCell(row, 4, tview.NewTableCell(tview.Escape(c.Subject)).SetTextColor(colorValue).SetExpansion(1))
+		row++
 	}
-	title := fmt.Sprintf(" Commits[%d] ", len(d.commits))
+	more := ""
 	if len(d.commits) == commitLimit {
-		title = fmt.Sprintf(" Commits[%d+] ", len(d.commits))
+		more = "+"
 	}
-	d.left.SetTitle(title)
-	d.finishLeft(len(d.commits), "no commits")
-}
-
-func (d *detailView) visiblePRs() []int {
-	var idx []int
-	for i, p := range d.prs {
-		if d.mineOnly && !p.Mine {
-			continue
-		}
-		idx = append(idx, i)
-	}
-	return idx
+	d.finishLeft(fmt.Sprintf(" Commits[%d%s]", row-1, more), row-1, "no commits")
 }
 
 func (d *detailView) renderPRs() {
 	d.left.Clear()
 	d.header("#", "TITLE", "AUTHOR", "HEAD → BASE", "UPDATED")
-	idx := d.visiblePRs()
-	for row, i := range idx {
-		p := d.prs[i]
+	row := 1
+	for i, p := range d.prs {
+		if d.mineOnly && !p.Mine {
+			continue
+		}
 		title := p.Title
 		if p.Draft {
 			title = "[draft] " + title
 		}
-		d.left.SetCell(row+1, 0, tview.NewTableCell(strconv.Itoa(p.Number)).SetTextColor(colorSHA).SetReference(i))
-		d.left.SetCell(row+1, 1, tview.NewTableCell(tview.Escape(title)).SetTextColor(colorValue).SetExpansion(1))
-		d.left.SetCell(row+1, 2, tview.NewTableCell(tview.Escape(trunc(p.Author, 18))).SetTextColor(colorMuted))
-		d.left.SetCell(row+1, 3, tview.NewTableCell(tview.Escape(p.Head+" → "+p.Base)).SetTextColor(colorMuted))
-		d.left.SetCell(row+1, 4, tview.NewTableCell(age(p.Updated)).SetTextColor(colorMuted))
+		if !d.filter.match(strconv.Itoa(p.Number), title, p.Author, p.Head, p.Base) {
+			continue
+		}
+		d.left.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(p.Number)).SetTextColor(colorSHA).SetReference(i))
+		d.left.SetCell(row, 1, tview.NewTableCell(tview.Escape(title)).SetTextColor(colorValue).SetExpansion(1))
+		d.left.SetCell(row, 2, tview.NewTableCell(tview.Escape(trunc(p.Author, 18))).SetTextColor(colorMuted))
+		d.left.SetCell(row, 3, tview.NewTableCell(tview.Escape(p.Head+" → "+p.Base)).SetTextColor(colorMuted))
+		d.left.SetCell(row, 4, tview.NewTableCell(age(p.Updated)).SetTextColor(colorMuted))
+		row++
 	}
 	scope := "mine"
 	if !d.mineOnly {
@@ -395,14 +418,13 @@ func (d *detailView) renderPRs() {
 	if d.remote.Slug != "" {
 		where += ":" + d.remote.Slug
 	}
-	d.left.SetTitle(fmt.Sprintf(" Pull Requests(%s)[%d] %s ", scope, len(idx), where))
 	empty := "no open pull requests"
 	if d.remoteErr != nil {
 		empty = "cannot list pull requests: " + d.remoteErr.Error()
-	} else if d.mineOnly && len(d.prs) > 0 {
+	} else if d.mineOnly && len(d.prs) > 0 && d.filter.text == "" {
 		empty = fmt.Sprintf("none of the %s are yours (press m to show all)", plural(len(d.prs), "open pull request"))
 	}
-	d.finishLeft(len(idx), empty)
+	d.finishLeft(fmt.Sprintf(" Pull Requests(%s)[%d] %s", scope, row-1, where), row-1, empty)
 }
 
 // --- right pane ------------------------------------------------------------
@@ -461,6 +483,7 @@ func (d *detailView) scheduleRight() {
 func (d *detailView) rightJob() (string, func() (string, error)) {
 	i := d.selectedIndex()
 	alt := d.showAlt[d.mode]
+	style := d.app.syntaxStyle
 	switch d.mode {
 	case modeWork:
 		if i < 0 || i >= len(d.files) {
@@ -470,7 +493,7 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 		if alt {
 			return fmt.Sprintf(" %s [diff] ", f.Path), func() (string, error) {
 				out, err := git.WorkDiff(d.repo.path, f)
-				return colorizeDiff(out), err
+				return colorizeDiff(out, style), err
 			}
 		}
 		return fmt.Sprintf(" %s [content] ", f.Path), func() (string, error) {
@@ -478,7 +501,7 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 			if strings.HasPrefix(out, "(") && !strings.Contains(out, "\n") {
 				return "[gray]" + tview.Escape(out) + "[-]", err
 			}
-			return numbered(out), err
+			return numbered(newHighlighter(f.Path, out, style).lines(out)), err
 		}
 	case modeCommits:
 		if i < 0 || i >= len(d.commits) {
@@ -491,7 +514,7 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 		}
 		return fmt.Sprintf(" %s [%s] ", c.Short, label), func() (string, error) {
 			out, err := git.Show(d.repo.path, c.SHA, alt)
-			return colorizeDiff(out), err
+			return colorizeDiff(out, style), err
 		}
 	case modePRs:
 		if i < 0 || i >= len(d.prs) {
@@ -501,7 +524,7 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 		if alt {
 			return fmt.Sprintf(" #%d [diff] ", p.Number), func() (string, error) {
 				out, err := git.PRDiff(d.repo.path, d.remote.Name, p.Number, p.Base)
-				return colorizeDiff(out), err
+				return colorizeDiff(out, style), err
 			}
 		}
 		return fmt.Sprintf(" #%d [details] ", p.Number), func() (string, error) {

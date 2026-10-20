@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"path/filepath"
 	"time"
 
 	"github.com/botenvouwer/gitmaster/internal/config"
 	"github.com/botenvouwer/gitmaster/internal/git"
+	"github.com/botenvouwer/gitmaster/internal/pr"
 )
 
 // repoEntry is one repo of the environment plus its (possibly cached) status.
@@ -16,17 +18,24 @@ type repoEntry struct {
 	loaded bool // fresh status fetched this session
 	cached bool // status pre-filled from .gitmaster/cache.json
 	err    error
+
+	archived bool      // archived on the remote
+	remoteAt time.Time // when the remote was last asked
 }
+
+// remoteTTL is how long a remote check (archived flag) stays valid.
+const remoteTTL = 24 * time.Hour
 
 // environment is the directory gitmaster was opened in: its repos, the local
 // config (projects) and the scan cache. Shared by all views.
 type environment struct {
-	dir     string
-	repos   []*repoEntry
-	local   *config.Local // nil until repos were found
-	cache   *config.Cache
-	gen     int
-	pending int
+	dir           string
+	repos         []*repoEntry
+	local         *config.Local // nil until repos were found
+	cache         *config.Cache
+	gen           int
+	pending       int
+	remotePending int
 }
 
 func (e *environment) repo(name string) *repoEntry {
@@ -43,6 +52,39 @@ func (e *environment) projects() []config.Project {
 		return nil
 	}
 	return e.local.Projects
+}
+
+// visible filters out archived repos unless the user asked to see them.
+func (a *App) visible(repos []*repoEntry) []*repoEntry {
+	if a.showArchived {
+		return repos
+	}
+	out := make([]*repoEntry, 0, len(repos))
+	for _, r := range repos {
+		if !r.archived {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// hiddenNote describes how many of repos are hidden, or "" when none.
+func (a *App) hiddenNote(repos []*repoEntry) string {
+	n := len(repos) - len(a.visible(repos))
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d archived hidden)", n)
+}
+
+func (a *App) toggleArchived() {
+	a.showArchived = !a.showArchived
+	if a.showArchived {
+		a.Flash("showing archived repos")
+	} else {
+		a.Flash("hiding archived repos")
+	}
+	a.notify()
 }
 
 // counts summarises the loaded repos.
@@ -64,8 +106,9 @@ func (e *environment) counts(repos []*repoEntry) (dirty, unpushed, loaded int) {
 
 // scan rescans the directory and refreshes every repo's status in the
 // background. The first successful scan sets up <dir>/.gitmaster and records
-// the directory as an environment in the global config.
-func (a *App) scan() {
+// the directory as an environment in the global config. Remote facts are
+// re-fetched when older than remoteTTL, or always with force.
+func (a *App) scan(force bool) {
 	e := a.env
 	e.gen++
 	gen := e.gen
@@ -100,6 +143,7 @@ func (a *App) scan() {
 		r := &repoEntry{name: filepath.Base(p), path: p}
 		if c, ok := e.cache.Repos[r.name]; ok {
 			r.status, r.cached = fromCache(c), true
+			r.archived, r.remoteAt = c.Archived, c.RemoteCheckedAt
 		}
 		e.repos = append(e.repos, r)
 	}
@@ -125,6 +169,50 @@ func (a *App) scan() {
 			})
 		}(r)
 	}
+	a.checkRemotes(gen, force)
+}
+
+// checkRemotes asks each repo's remote whether it is archived, in the
+// background, for repos whose last check is stale.
+func (a *App) checkRemotes(gen int, force bool) {
+	e := a.env
+	var todo []*repoEntry
+	for _, r := range e.repos {
+		if force || time.Since(r.remoteAt) > remoteTTL {
+			todo = append(todo, r)
+		}
+	}
+	e.remotePending = len(todo)
+	sem := make(chan struct{}, 4)
+	for _, r := range todo {
+		go func(r *repoEntry) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			archived, err := remoteArchived(r.path)
+			a.QueueUpdateDraw(func() {
+				if gen != e.gen {
+					return
+				}
+				if err == nil {
+					r.archived = archived
+				}
+				r.remoteAt = time.Now()
+				e.remotePending--
+				if e.remotePending == 0 {
+					a.saveCache()
+				}
+				a.notify()
+			})
+		}(r)
+	}
+}
+
+func remoteArchived(dir string) (bool, error) {
+	remote, err := pr.Detect(dir)
+	if err != nil {
+		return false, err
+	}
+	return pr.Archived(dir, remote)
 }
 
 func (a *App) saveCache() {
@@ -135,8 +223,10 @@ func (a *App) saveCache() {
 	e.cache.ScannedAt = time.Now()
 	e.cache.Repos = map[string]config.RepoCache{}
 	for _, r := range e.repos {
-		if r.loaded && r.err == nil {
-			e.cache.Repos[r.name] = toCache(r.status)
+		if (r.loaded && r.err == nil) || (!r.loaded && r.cached) {
+			c := toCache(r.status)
+			c.Archived, c.RemoteCheckedAt = r.archived, r.remoteAt
+			e.cache.Repos[r.name] = c
 		}
 	}
 	if err := e.cache.Save(); err != nil {

@@ -23,9 +23,18 @@ import (
 // DirName is the name of both the global (~/.gitmaster) and local (.gitmaster) dirs.
 const DirName = ".gitmaster"
 
-// Settings holds user settings. There are none yet; the section exists so the
-// file already has a place for them.
-type Settings struct{}
+// Settings holds user settings.
+type Settings struct {
+	// ShowArchived shows repos that are archived on their remote; they are
+	// hidden by default. The A key toggles it for the running session.
+	ShowArchived bool `json:"showArchived"`
+	// SyntaxStyle is the chroma style used to colour code (e.g. monokai,
+	// dracula, github-dark, solarized-dark).
+	SyntaxStyle string `json:"syntaxStyle"`
+}
+
+// DefaultSyntaxStyle is used when the setting is empty.
+const DefaultSyntaxStyle = "monokai"
 
 // Environment is a directory gitmaster has been opened in that contained repos.
 type Environment struct {
@@ -55,11 +64,15 @@ func LoadGlobal() (*Global, error) {
 	if err != nil {
 		return nil, err
 	}
-	g := &Global{Environments: []Environment{}, path: filepath.Join(dir, "config.json")}
+	g := &Global{Settings: Settings{SyntaxStyle: DefaultSyntaxStyle}, Environments: []Environment{}, path: filepath.Join(dir, "config.json")}
 	if err := load(g.path, g); err != nil {
 		return nil, err
 	}
-	return g, nil
+	if g.Settings.SyntaxStyle == "" {
+		g.Settings.SyntaxStyle = DefaultSyntaxStyle
+	}
+	// Write back so newly added settings show up in the file with defaults.
+	return g, g.Save()
 }
 
 // Save writes the global config.
@@ -207,6 +220,9 @@ type RepoCache struct {
 	Untracked   int       `json:"untracked"`
 	LastCommit  time.Time `json:"lastCommit"`
 	LastSubject string    `json:"lastSubject"`
+	// Remote facts, refreshed when RemoteCheckedAt is older than a day.
+	Archived        bool      `json:"archived"`
+	RemoteCheckedAt time.Time `json:"remoteCheckedAt"`
 }
 
 // Cache holds the result of the last scan so the UI can show it instantly.

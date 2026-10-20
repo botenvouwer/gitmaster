@@ -10,12 +10,15 @@ gitmaster ~/repo/x   # repos under another directory
 
 ## Keys
 
+Every list: `/` filter by text (Enter keeps it, Esc clears it), `A` show or
+hide repos that are archived on their remote (hidden by default).
+
 Home: `enter` open all repos or a project, `n` new project, `e` edit a
 project's repos, `R` rename, `d` delete, `r` rescan.
 
-Repos: `0` all, `1` unpushed commits, `2` uncommitted/untracked, `/` filter by
-name, `enter` open repo, `a` add repo to a project, `x` remove from the current
-project, `r` rescan.
+Repos: `0` all, `1` unpushed commits, `2` uncommitted/untracked, `enter` open
+repo, `a` add repo to a project, `x` remove from the current project,
+`r` rescan.
 
 Project repos: `space`/`enter` toggle a repo, `esc` done.
 
@@ -28,9 +31,11 @@ scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
 
 ## Files
 
-- `~/.gitmaster/config.json` — global settings and the directories you opened.
+- `~/.gitmaster/config.json` — settings (`showArchived`, `syntaxStyle` for the
+  code colours, any chroma style name) and the directories you opened.
 - `<dir>/.gitmaster/config.json` — the projects defined for that directory.
-- `<dir>/.gitmaster/cache.json` — last scan, shown until fresh status arrives.
+- `<dir>/.gitmaster/cache.json` — last scan and remote facts (archived), shown
+  until fresh data arrives.
 
 ## Install
 

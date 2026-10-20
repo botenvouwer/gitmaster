@@ -32,13 +32,26 @@ func age(t time.Time) string {
 	return fmt.Sprintf("%dy", int(d.Hours()/(24*365)))
 }
 
-// colorizeDiff adds tview color tags to unified diff output.
-func colorizeDiff(s string) string {
+// colorizeDiff adds tview color tags to unified diff output. Added and
+// removed lines keep their diff colours; context lines are syntax-coloured
+// for the file named in the diff header.
+func colorizeDiff(s, styleName string) string {
 	var b strings.Builder
+	var hl *highlighter
 	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if strings.HasPrefix(line, " ") && hl != nil {
+			b.WriteString(" " + hl.line(line[1:]) + "\n")
+			continue
+		}
 		tag := ""
 		switch {
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+++ "):
+			tag = "[yellow::b]"
+			hl = nil
+			if path := strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/"); path != "/dev/null" {
+				hl = newHighlighter(path, "", styleName)
+			}
+		case strings.HasPrefix(line, "---"):
 			tag = "[yellow::b]"
 		case strings.HasPrefix(line, "diff --git"), strings.HasPrefix(line, "index "),
 			strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
@@ -66,13 +79,13 @@ func colorizeDiff(s string) string {
 	return b.String()
 }
 
-// numbered prefixes every line with a muted line number.
-func numbered(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+// numbered prefixes every (already tagged and escaped) line with a muted
+// line number.
+func numbered(lines []string) string {
 	width := len(strconv.Itoa(len(lines)))
 	var b strings.Builder
 	for i, line := range lines {
-		fmt.Fprintf(&b, "[gray]%*d[-] %s\n", width, i+1, tview.Escape(line))
+		fmt.Fprintf(&b, "[gray]%*d[-] %s\n", width, i+1, line)
 	}
 	return b.String()
 }

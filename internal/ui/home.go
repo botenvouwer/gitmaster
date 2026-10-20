@@ -16,41 +16,46 @@ type homeRef struct {
 
 // homeView is the entry screen: all repos plus the projects of this directory.
 type homeView struct {
-	*tview.Table
+	*filterBox
 	app *App
 }
 
 func newHome(a *App) *homeView {
-	h := &homeView{Table: tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected), app: a}
-	h.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
-	h.SetSelectedFunc(func(row, _ int) { h.open() })
-	h.SetInputCapture(h.keys)
+	h := &homeView{app: a}
+	table := tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
+	table.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
+	table.SetSelectedFunc(func(row, _ int) { h.open() })
+	table.SetInputCapture(h.keys)
+	h.filterBox = newFilterBox(a, table, h.rebuild)
 	return h
 }
 
 func (h *homeView) crumbs() []string             { return []string{"home"} }
-func (h *homeView) focusTarget() tview.Primitive { return h.Table }
-func (h *homeView) escape() bool                 { return false }
+func (h *homeView) focusTarget() tview.Primitive { return h.table }
+func (h *homeView) escape() bool                 { return h.clear() }
 func (h *homeView) start()                       { h.rebuild() }
 func (h *homeView) update()                      { h.rebuild() }
 
 func (h *homeView) hotkeys() []hotkey {
 	return []hotkey{
 		{"enter", "open"},
+		{"/", "filter"},
 		{"n", "new project"},
 		{"e", "edit project repos"},
 		{"R", "rename project"},
 		{"d", "delete project"},
+		{"A", "show / hide archived"},
 		{"r", "rescan"},
 	}
 }
 
 func (h *homeView) info() [][2]string {
 	e := h.app.env
-	dirty, unpushed, loaded := e.counts(e.repos)
-	repos := strconv.Itoa(len(e.repos))
-	if loaded < len(e.repos) {
-		repos += fmt.Sprintf(" (%d loading)", len(e.repos)-loaded)
+	all := h.app.visible(e.repos)
+	dirty, unpushed, loaded := e.counts(all)
+	repos := strconv.Itoa(len(all))
+	if loaded < len(all) {
+		repos += fmt.Sprintf(" (%d loading)", len(all)-loaded)
 	}
 	return [][2]string{
 		{"Dir", shortenHome(e.dir)},
@@ -61,11 +66,11 @@ func (h *homeView) info() [][2]string {
 }
 
 func (h *homeView) selected() (homeRef, bool) {
-	row, _ := h.GetSelection()
+	row, _ := h.table.GetSelection()
 	if row < 1 {
 		return homeRef{}, false
 	}
-	ref, ok := h.GetCell(row, 0).GetReference().(homeRef)
+	ref, ok := h.table.GetCell(row, 0).GetReference().(homeRef)
 	return ref, ok
 }
 
@@ -88,6 +93,9 @@ func (h *homeView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyRune:
 		switch ev.Rune() {
+		case '/':
+			h.show(true)
+			return nil
 		case 'n':
 			if e.local == nil {
 				h.app.Flash("no repositories here to build a project from")
@@ -130,8 +138,11 @@ func (h *homeView) keys(ev *tcell.EventKey) *tcell.EventKey {
 				})
 			}
 			return nil
+		case 'A':
+			h.app.toggleArchived()
+			return nil
 		case 'r':
-			h.app.scan()
+			h.app.scan(true)
 			return nil
 		case 'J':
 			h.move(5)
@@ -141,21 +152,22 @@ func (h *homeView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 	}
-	return swallowWhenEmpty(h.Table, ev)
+	return swallowWhenEmpty(h.table, ev)
 }
 
 func (h *homeView) move(delta int) {
-	if h.GetRowCount() <= 1 {
+	if h.table.GetRowCount() <= 1 {
 		return
 	}
-	row, _ := h.GetSelection()
-	h.Select(max(1, min(h.GetRowCount()-1, row+delta)), 0)
+	row, _ := h.table.GetSelection()
+	h.table.Select(max(1, min(h.table.GetRowCount()-1, row+delta)), 0)
 }
 
 func (h *homeView) rebuild() {
 	keep, _ := h.selected()
 	e := h.app.env
-	h.Clear()
+	t := h.table
+	t.Clear()
 	for c, name := range []string{"NAME", "REPOS", "UNCOMMITTED", "UNPUSHED", "MISSING"} {
 		cell := tview.NewTableCell(name).SetStyle(styleHeader).SetSelectable(false)
 		if c > 0 {
@@ -163,7 +175,7 @@ func (h *homeView) rebuild() {
 		} else {
 			cell.SetExpansion(1)
 		}
-		h.SetCell(0, c, cell)
+		t.SetCell(0, c, cell)
 	}
 	num := func(n int, hot tcell.Color) *tview.TableCell {
 		c := tview.NewTableCell(strconv.Itoa(n)).SetAlign(tview.AlignRight).SetTextColor(colorMuted)
@@ -174,19 +186,23 @@ func (h *homeView) rebuild() {
 	}
 	row := 1
 	add := func(ref homeRef, label string, repos []*repoEntry, missing int) {
+		if !h.match(label) {
+			return
+		}
 		dirty, unpushed, _ := e.counts(repos)
-		h.SetCell(row, 0, tview.NewTableCell(tview.Escape(label)).SetTextColor(colorValue).SetExpansion(1).SetReference(ref))
-		h.SetCell(row, 1, num(len(repos), colorValue))
-		h.SetCell(row, 2, num(dirty, colorDirty))
-		h.SetCell(row, 3, num(unpushed, colorDirty))
-		h.SetCell(row, 4, num(missing, colorError))
+		t.SetCell(row, 0, tview.NewTableCell(tview.Escape(label)).SetTextColor(colorValue).SetExpansion(1).SetReference(ref))
+		t.SetCell(row, 1, num(len(repos), colorValue))
+		t.SetCell(row, 2, num(dirty, colorDirty))
+		t.SetCell(row, 3, num(unpushed, colorDirty))
+		t.SetCell(row, 4, num(missing, colorError))
 		if ref == keep {
-			h.Select(row, 0)
+			t.Select(row, 0)
 		}
 		row++
 	}
+	all := h.app.visible(e.repos)
 	if len(e.repos) > 0 {
-		add(homeRef{all: true}, "all repos", e.repos, 0)
+		add(homeRef{all: true}, "all repos", all, 0)
 	}
 	for _, p := range e.projects() {
 		var repos []*repoEntry
@@ -198,15 +214,15 @@ func (h *homeView) rebuild() {
 				missing++
 			}
 		}
-		add(homeRef{project: p.Name}, p.Name, repos, missing)
+		add(homeRef{project: p.Name}, p.Name, h.app.visible(repos), missing)
 	}
-	title := fmt.Sprintf(" Home(%s)[%s, %s] ", shortenHome(e.dir), plural(len(e.repos), "repo"), plural(len(e.projects()), "project"))
+	title := fmt.Sprintf(" Home(%s)[%s, %s]%s%s ", shortenHome(e.dir), plural(len(all), "repo"), plural(len(e.projects()), "project"), h.app.hiddenNote(e.repos), h.suffix())
 	if len(e.repos) == 0 {
 		title = fmt.Sprintf(" Home(%s) no git repositories found ", shortenHome(e.dir))
 	}
-	h.SetTitle(tview.Escape(title))
-	if r, _ := h.GetSelection(); row > 1 && (r < 1 || r >= row) {
-		h.Select(1, 0)
+	t.SetTitle(tview.Escape(title))
+	if r, _ := t.GetSelection(); row > 1 && (r < 1 || r >= row) {
+		t.Select(1, 0)
 	}
 }
 

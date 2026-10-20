@@ -30,38 +30,19 @@ func (f filterMode) String() string {
 
 // masterView lists the repos of the environment, or of one project.
 type masterView struct {
-	*tview.Flex
+	*filterBox
 	app     *App
 	project string // "" for all repos
-	table   *tview.Table
-	input   *tview.InputField
-
-	mode filterMode
-	text string
+	mode    filterMode
 }
 
 func newMaster(a *App, project string) *masterView {
-	m := &masterView{Flex: tview.NewFlex().SetDirection(tview.FlexRow), app: a, project: project}
-
-	m.input = tview.NewInputField().SetLabel(" /> ").SetLabelColor(colorKey).
-		SetFieldBackgroundColor(tcell.ColorBlack).SetFieldTextColor(colorValue)
-	m.input.SetChangedFunc(func(text string) {
-		m.text = text
-		m.rebuild()
-	})
-	m.input.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEsc {
-			m.input.SetText("")
-		}
-		m.showInput(false)
-	})
-
-	m.table = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
-	m.table.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
-	m.table.SetSelectedFunc(func(row, _ int) { m.open() })
-	m.table.SetInputCapture(m.keys)
-
-	m.AddItem(m.input, 0, 0, false).AddItem(m.table, 0, 1, true)
+	m := &masterView{app: a, project: project}
+	table := tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
+	table.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
+	table.SetSelectedFunc(func(row, _ int) { m.open() })
+	table.SetInputCapture(m.keys)
+	m.filterBox = newFilterBox(a, table, m.rebuild)
 	return m
 }
 
@@ -75,24 +56,26 @@ func (m *masterView) crumbs() []string {
 func (m *masterView) focusTarget() tview.Primitive { return m.table }
 func (m *masterView) start()                       { m.rebuild() }
 func (m *masterView) update()                      { m.rebuild() }
+func (m *masterView) escape() bool                 { return m.clear() }
 
 func (m *masterView) hotkeys() []hotkey {
 	keys := []hotkey{
 		{"0", "all"},
 		{"1", "unpushed commits"},
 		{"2", "uncommitted / untracked"},
-		{"/", "filter by name"},
+		{"/", "filter"},
 		{"enter", "open repo"},
 		{"a", "add to project"},
 	}
 	if m.project != "" {
 		keys = append(keys, hotkey{"x", "remove from project"})
 	}
-	return append(keys, hotkey{"r", "rescan"})
+	return append(keys, hotkey{"A", "show / hide archived"}, hotkey{"r", "rescan"})
 }
 
-// repos returns the repos in scope: all, or the project's members.
-func (m *masterView) repos() []*repoEntry {
+// scope returns the repos in scope, archived ones included: all, or the
+// project's members.
+func (m *masterView) scope() []*repoEntry {
 	e := m.app.env
 	if m.project == "" {
 		return e.repos
@@ -109,6 +92,9 @@ func (m *masterView) repos() []*repoEntry {
 	}
 	return out
 }
+
+// repos returns the repos to show.
+func (m *masterView) repos() []*repoEntry { return m.app.visible(m.scope()) }
 
 func (m *masterView) info() [][2]string {
 	repos := m.repos()
@@ -129,27 +115,6 @@ func (m *masterView) info() [][2]string {
 	}
 }
 
-func (m *masterView) escape() bool {
-	if m.text != "" {
-		m.input.SetText("")
-		m.text = ""
-		m.rebuild()
-		return true
-	}
-	return false
-}
-
-func (m *masterView) showInput(show bool) {
-	if show {
-		m.ResizeItem(m.input, 1, 0)
-		m.app.SetFocus(m.input)
-		return
-	}
-	m.ResizeItem(m.input, 0, 0)
-	m.app.SetFocus(m.table)
-	m.rebuild()
-}
-
 func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 	switch ev.Key() {
 	case tcell.KeyUp, tcell.KeyDown:
@@ -165,7 +130,7 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			m.app.refresh()
 			return nil
 		case '/':
-			m.showInput(true)
+			m.show(true)
 			return nil
 		case 'a':
 			m.addToProject()
@@ -173,8 +138,11 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'x':
 			m.removeFromProject()
 			return nil
+		case 'A':
+			m.app.toggleArchived()
+			return nil
 		case 'r':
-			m.app.scan()
+			m.app.scan(true)
 			return nil
 		case 'J':
 			m.move(5)
@@ -245,7 +213,7 @@ func (m *masterView) removeFromProject() {
 }
 
 func (m *masterView) visible(r *repoEntry) bool {
-	if m.text != "" && !strings.Contains(strings.ToLower(r.name), strings.ToLower(m.text)) {
+	if !m.match(r.name, r.status.Branch) {
 		return false
 	}
 	switch m.mode {
@@ -300,10 +268,7 @@ func (m *masterView) rebuild() {
 	if m.project != "" {
 		scope = m.project + ":" + scope
 	}
-	title := fmt.Sprintf(" Repos(%s)[%d] ", scope, count)
-	if m.text != "" {
-		title += "/" + m.text + " "
-	}
+	title := fmt.Sprintf(" Repos(%s)[%d]%s%s ", scope, count, m.app.hiddenNote(m.scope()), m.suffix())
 	m.table.SetTitle(tview.Escape(title))
 	if count > 0 {
 		m.table.Select(selectRow, 0)
@@ -332,7 +297,13 @@ func stateText(r *repoEntry) (string, tcell.Color) {
 		state = append(state, "conflicts")
 	}
 	if len(state) == 0 {
+		if r.archived {
+			return "archived", colorMuted
+		}
 		return "clean", colorClean
+	}
+	if r.archived {
+		state = append([]string{"archived"}, state...)
 	}
 	return strings.Join(state, ","), colorDirty
 }

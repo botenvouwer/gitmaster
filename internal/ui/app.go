@@ -45,11 +45,13 @@ type App struct {
 	crumbTV *tview.TextView
 	helpTV  *tview.TextView
 
-	stack      []view
-	flashTimer *time.Timer
-	helpShown  bool
-	modal      bool
-	prevFocus  tview.Primitive
+	stack        []view
+	flashTimer   *time.Timer
+	helpShown    bool
+	modal        bool
+	showArchived bool
+	syntaxStyle  string
+	prevFocus    tview.Primitive
 }
 
 // New builds the application for the given directory.
@@ -57,6 +59,11 @@ func New(dir, version string) *App {
 	a := &App{Application: tview.NewApplication(), dir: dir, version: version}
 	a.env = &environment{dir: dir}
 	a.global, a.globalErr = config.LoadGlobal()
+	a.syntaxStyle = config.DefaultSyntaxStyle
+	if a.global != nil {
+		a.showArchived = a.global.Settings.ShowArchived
+		a.syntaxStyle = a.global.Settings.SyntaxStyle
+	}
 
 	a.infoTV = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	a.keysTV = tview.NewTextView().SetDynamicColors(true)
@@ -106,7 +113,7 @@ func (a *App) Run() error {
 	if a.globalErr != nil {
 		a.FlashErr(a.globalErr)
 	}
-	a.scan()
+	a.scan(false)
 	return a.Application.Run()
 }
 
