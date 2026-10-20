@@ -26,9 +26,18 @@ namespace.
   24h TTL, and is stored in the scan cache.
 - **Live state**: every `settings.refreshSeconds` (default 1, 0 = off) the
   repos on the current screen get a fresh `git status` in the background
-  (`App.refreshStatuses` in `env.go`); tables re-render only when something
-  changed, the open-work file list follows the working tree. Views opt in via
-  `refreshTargets()`.
+  (`App.refreshTick` / `fetchStatus` in `env.go`). Each repo is read on its
+  own: one read in flight per repo (`repoEntry.inFlight`), at most 8 git
+  processes at once, so a slow repo never holds up the others; every git
+  command is killed after `git.Timeout` (2 min) and the error lands in the
+  STATE column. Results that change something call `App.markDirty`, which
+  coalesces into one `notify` (re-render) per 50 ms; the tables are also
+  re-rendered at least every 30 s so ages advance. On the live status screen
+  the user's commits are re-read when a repo's status changed or every 10 s.
+  Views opt in via `refreshTargets()`; a view can implement `tick()` to check
+  its own things each tick: the repo screen re-reads the open-work file
+  shown in the content pane when it changed on disk (stat, scroll kept) and
+  reloads the commit list when HEAD moved (`headKey`).
 - **Syntax colouring**: file content and diff context lines are coloured by
   language with chroma (`internal/ui/highlight.go`), JSON and YAML included.
   `settings.syntaxStyle` picks the chroma style (default `monokai`).

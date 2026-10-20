@@ -53,7 +53,8 @@ type App struct {
 	showArchived bool
 	syntaxStyle  string
 	refreshEvery time.Duration
-	refreshing   bool
+	dirty        bool      // a notify is scheduled (markDirty)
+	rendered     time.Time // last notify
 	prevFocus    tview.Primitive
 }
 

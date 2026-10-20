@@ -4,6 +4,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -81,13 +82,24 @@ func ScanRepos(root string) ([]string, error) {
 	return repos, nil
 }
 
+// Timeout bounds every git command. A command that hangs (a repo on an
+// unreachable mount, a stuck lock, a slow remote) is killed and reported as
+// an error instead of blocking the UI's refresh forever.
+var Timeout = 2 * time.Minute
+
 func run(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-c", "color.ui=never"}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "color.ui=never"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.WaitDelay = 5 * time.Second // give up on the pipes if a child keeps them open
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return out.String(), fmt.Errorf("git %s: timed out after %s", args[0], Timeout)
+		}
 		var ee *exec.ExitError
 		// `git diff` family exits 1 when there are differences.
 		if errors.As(err, &ee) && ee.ExitCode() == 1 && len(args) > 0 && args[0] == "diff" && errb.Len() == 0 {

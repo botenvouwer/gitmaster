@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/botenvouwer/gitmaster/internal/config"
@@ -21,6 +20,8 @@ type repoEntry struct {
 	cached bool // status pre-filled from .gitmaster/cache.json
 	err    error
 
+	inFlight bool // a status read is running (UI goroutine only)
+
 	archived bool      // archived on the remote
 	remoteAt time.Time // when the remote was last asked
 
@@ -36,6 +37,7 @@ type repoEntry struct {
 	// Live status: the user's recent commits and closed PRs.
 	myCommits    []git.Commit
 	commitsSince time.Time
+	commitsAt    time.Time // when myCommits was last read
 	closedPRs    []pr.PR
 	closedSince  time.Time
 	closedErr    error
@@ -69,10 +71,10 @@ func (a *App) loadLive(repos []*repoEntry, since time.Time, force bool) {
 					return
 				}
 				if cerr == nil {
-					r.myCommits, r.commitsSince = commits, since
+					r.myCommits, r.commitsSince, r.commitsAt = commits, since, time.Now()
 				}
 				r.closedPRs, r.closedErr, r.closedSince = closed, err, since
-				a.notify()
+				a.markDirty()
 			})
 		}(r)
 	}
@@ -105,7 +107,7 @@ func (a *App) loadPRs(repos []*repoEntry, force bool) {
 				}
 				r.prRemote, r.prs, r.prErr, r.prLoaded = remote, prs, err, true
 				r.prGen++
-				a.notify()
+				a.markDirty()
 			})
 		}(r)
 	}
@@ -238,24 +240,13 @@ func (a *App) scan(force bool) {
 	e.pending = len(e.repos)
 	a.notify()
 
-	sem := make(chan struct{}, 8)
 	for _, r := range e.repos {
-		go func(r *repoEntry) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			st, err := git.GetStatus(r.path)
-			a.QueueUpdateDraw(func() {
-				if gen != e.gen {
-					return
-				}
-				r.status, r.err, r.loaded = st, err, true
-				e.pending--
-				if e.pending == 0 {
-					a.saveCache()
-				}
-				a.notify()
-			})
-		}(r)
+		a.fetchStatus(r, time.Time{}, func() {
+			e.pending--
+			if e.pending == 0 {
+				a.saveCache()
+			}
+		})
 	}
 	a.checkRemotes(gen, force)
 }
@@ -289,7 +280,7 @@ func (a *App) checkRemotes(gen int, force bool) {
 				if e.remotePending == 0 {
 					a.saveCache()
 				}
-				a.notify()
+				a.markDirty()
 			})
 		}(r)
 	}
@@ -365,10 +356,27 @@ func (a *App) openURL(resolve func() (string, error)) {
 
 // notify tells every view on the stack that repo/project data changed.
 func (a *App) notify() {
+	a.dirty, a.rendered = false, time.Now()
 	for _, v := range a.stack {
 		v.update()
 	}
 	a.refresh()
+}
+
+// markDirty asks for a notify shortly: results landing in a burst (one per
+// repo) are rendered once. UI goroutine only.
+func (a *App) markDirty() {
+	if a.dirty {
+		return
+	}
+	a.dirty = true
+	time.AfterFunc(50*time.Millisecond, func() {
+		a.QueueUpdateDraw(func() {
+			if a.dirty {
+				a.notify()
+			}
+		})
+	})
 }
 
 // refresher is implemented by views that show live repo state.
@@ -376,94 +384,130 @@ type refresher interface {
 	refreshTargets() []*repoEntry
 }
 
-// startAutoRefresh re-reads git status for the repos on screen every
-// refreshEvery, re-rendering only when something changed.
+// liveRefresher is implemented by the live status screen: its commits are
+// re-read too.
+type liveRefresher interface {
+	liveSince() time.Time
+}
+
+// ticker is implemented by views that want to check something of their own
+// on every refresh tick (the repo screen follows the file on screen).
+type ticker interface {
+	tick()
+}
+
+// statusSem bounds the number of git processes reading status at once.
+var statusSem = make(chan struct{}, 8)
+
+const (
+	// commitsEvery is how often the live status re-reads a repo's commits
+	// when its status did not change (a fetch can still move the remote
+	// base branches).
+	commitsEvery = 10 * time.Second
+	// renderEvery is the longest the tables go without a re-render, so the
+	// age columns keep moving.
+	renderEvery = 30 * time.Second
+)
+
+// startAutoRefresh ticks every refreshEvery on the UI goroutine.
 func (a *App) startAutoRefresh() {
 	if a.refreshEvery <= 0 {
 		return
 	}
 	go func() {
 		for range time.Tick(a.refreshEvery) {
-			a.QueueUpdateDraw(a.refreshStatuses)
+			a.QueueUpdateDraw(a.refreshTick)
 		}
 	}()
 }
 
-// liveRefresher is implemented by the live status screen: its commits are
-// re-read on every tick too.
-type liveRefresher interface {
-	liveSince() time.Time
+// refreshTick runs on the UI goroutine: it starts a status read for every
+// repo on screen that has none running, lets the view check its own
+// things, and re-renders now and then so ages advance.
+func (a *App) refreshTick() {
+	a.refreshStatuses()
+	if t, ok := a.top().(ticker); ok {
+		t.tick()
+	}
+	if time.Since(a.rendered) >= renderEvery {
+		a.notify()
+	}
 }
 
-// refreshStatuses runs on the UI goroutine; the git work happens in the
-// background and a tick is skipped while the previous one is still running.
+// refreshStatuses re-reads the status of the repos the top view shows.
 func (a *App) refreshStatuses() {
-	if a.refreshing || a.env.pending > 0 {
-		return
-	}
 	v, ok := a.top().(refresher)
 	if !ok {
-		return
-	}
-	targets := v.refreshTargets()
-	if len(targets) == 0 {
 		return
 	}
 	var since time.Time
 	if lv, ok := a.top().(liveRefresher); ok {
 		since = lv.liveSince()
 	}
+	for _, r := range v.refreshTargets() {
+		a.fetchStatus(r, since, nil)
+	}
+}
+
+// fetchStatus re-reads r's status in the background and applies it on the
+// UI goroutine, marking the views dirty when something the tables show
+// changed. With a non-zero since the user's commits since then are re-read
+// as well, when the status changed or commitsEvery passed. One read per
+// repo runs at a time, so a slow or stuck repo never holds up the others;
+// a hung git command is killed by git.Timeout. done, if given, runs after
+// the result was applied.
+func (a *App) fetchStatus(r *repoEntry, since time.Time, done func()) {
+	if r.inFlight {
+		return
+	}
+	r.inFlight = true
 	e := a.env
 	gen := e.gen
-	a.refreshing = true
+	prevKey := ""
+	if r.loaded && r.err == nil {
+		prevKey = statusKey(r.status)
+	}
+	readCommits := !since.IsZero() && time.Since(r.commitsAt) >= commitsEvery
 	go func() {
-		type result struct {
-			status  git.Status
-			err     error
-			commits []git.Commit
-			cerr    error
+		statusSem <- struct{}{}
+		st, err := git.GetStatus(r.path)
+		var commits []git.Commit
+		var cerr error
+		if !since.IsZero() && err == nil && (readCommits || statusKey(st) != prevKey) {
+			commits, cerr = git.MyCommits(r.path, since)
+			readCommits = true
 		}
-		results := make([]result, len(targets))
-		sem := make(chan struct{}, 8)
-		var wg sync.WaitGroup
-		for i, r := range targets {
-			wg.Add(1)
-			go func(i int, r *repoEntry) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				st, err := git.GetStatus(r.path)
-				res := result{status: st, err: err}
-				if !since.IsZero() {
-					res.commits, res.cerr = git.MyCommits(r.path, since)
-				}
-				results[i] = res
-			}(i, r)
-		}
-		wg.Wait()
+		<-statusSem
 		a.QueueUpdateDraw(func() {
-			a.refreshing = false
+			r.inFlight = false
 			if gen != e.gen {
 				return
 			}
-			changed := false
-			for i, r := range targets {
-				res := results[i]
-				if !since.IsZero() && res.cerr == nil && commitsKey(res.commits) != commitsKey(r.myCommits) {
-					r.myCommits, r.commitsSince = res.commits, since
-					changed = true
-				}
-				if res.err == nil && r.loaded && r.err == nil && statusKey(res.status) == statusKey(r.status) {
-					continue
-				}
-				r.status, r.err, r.loaded = res.status, res.err, true
-				changed = true
+			changed := !r.loaded || errText(err) != errText(r.err)
+			if err == nil {
+				changed = changed || statusKey(st) != statusKey(r.status)
+				r.status = st
+			}
+			r.err, r.loaded = err, true
+			if readCommits && err == nil && cerr == nil {
+				changed = changed || commitsKey(commits) != commitsKey(r.myCommits)
+				r.myCommits, r.commitsSince, r.commitsAt = commits, since, time.Now()
 			}
 			if changed {
-				a.notify()
+				a.markDirty()
+			}
+			if done != nil {
+				done()
 			}
 		})
 	}()
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func commitsKey(cs []git.Commit) string {
@@ -484,10 +528,10 @@ func commitsKey(cs []git.Commit) string {
 // statusKey captures everything the tables show, for change detection.
 func statusKey(s git.Status) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s|%s|%d|%d|%d|%d|%d|%d|%d|%s|", s.Branch, s.Upstream, s.Ahead, s.Behind,
-		s.Staged, s.Modified, s.Untracked, s.Conflicted, s.LastCommit.Unix(), s.LastSubject)
+	fmt.Fprintf(&b, "%s|%s|%t|%t|%d|%d|%d|%d|%d|%d|%d|%s|", s.Branch, s.Upstream, s.HasUpstream, s.HasRemote,
+		s.Ahead, s.Behind, s.Staged, s.Modified, s.Untracked, s.Conflicted, s.LastCommit.Unix(), s.LastSubject)
 	for _, f := range s.Files {
-		b.WriteString(f.XY + f.Path + "\x00")
+		b.WriteString(f.XY + f.Path + "\x01" + f.OrigPath + "\x00")
 	}
 	return b.String()
 }

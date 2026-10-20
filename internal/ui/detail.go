@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,7 +124,8 @@ type detailView struct {
 
 	workFiles   []git.File
 	commits     []git.Commit
-	renderedPRs int // repo.prGen that the PR list was last rendered from
+	commitsHead string // headKey of the status the commit list was loaded for
+	renderedPRs int    // repo.prGen that the PR list was last rendered from
 
 	cur        *change
 	curFiles   []git.ChangedFile
@@ -134,6 +137,9 @@ type detailView struct {
 	filesGen   int
 	rightGen   int
 	rightTimer *time.Timer
+	rightPath  string  // open work: the file the content pane shows
+	rightSig   fileSig // its state on disk when the content was read
+	rightDone  bool    // the content pane shows what was last loaded
 }
 
 func newDetail(a *App, r *repoEntry, m mode) *detailView {
@@ -319,7 +325,16 @@ func (d *detailView) update() {
 		d.renderPRs()
 		return
 	}
-	if d.mode != modeWork || d.repo.err != nil || sameFiles(d.workFiles, d.repo.status.Files) {
+	if d.repo.err != nil {
+		return
+	}
+	if d.mode == modeCommits {
+		if d.repo.loaded && headKey(d.repo.status) != d.commitsHead {
+			d.reloadCommits()
+		}
+		return
+	}
+	if d.mode != modeWork || sameFiles(d.workFiles, d.repo.status.Files) {
 		return
 	}
 	selected := ""
@@ -334,6 +349,62 @@ func (d *detailView) update() {
 			break
 		}
 	}
+}
+
+// reloadCommits re-reads the commit list after HEAD moved, keeping the
+// selected commit unless the newest one was selected: then the new newest
+// commit is.
+func (d *detailView) reloadCommits() {
+	if row, _ := d.list.GetSelection(); row > 1 {
+		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.commits) {
+			d.openSHA = d.commits[i].SHA
+		}
+	}
+	d.loadLeft()
+}
+
+// headKey captures what moves the commit list: HEAD and what is pushed.
+func headKey(s git.Status) string {
+	return fmt.Sprintf("%s|%d|%d|%s", s.Branch, s.LastCommit.Unix(), s.Ahead, s.LastSubject)
+}
+
+// tick runs on every refresh tick. In open-work mode the content pane
+// follows the file it shows: when the file changed on disk it is re-read in
+// place, keeping the scroll position.
+func (d *detailView) tick() {
+	if d.mode != modeWork || d.rightPath == "" || !d.rightDone {
+		return
+	}
+	path, sig, gen := d.rightPath, d.rightSig, d.rightGen
+	go func() {
+		if statFile(path) == sig {
+			return
+		}
+		d.app.QueueUpdateDraw(func() {
+			if gen == d.rightGen {
+				d.loadRight(true)
+			}
+		})
+	}()
+}
+
+// fileSig is what tick compares to notice a changed file.
+type fileSig struct {
+	exists bool
+	dir    bool
+	size   int64
+	mod    time.Time
+}
+
+func statFile(path string) fileSig {
+	if path == "" {
+		return fileSig{}
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fileSig{}
+	}
+	return fileSig{exists: true, dir: fi.IsDir(), size: fi.Size(), mod: fi.ModTime()}
 }
 
 func sameFiles(a, b []git.File) bool {
@@ -602,6 +673,7 @@ func (d *detailView) loadLeft() {
 		d.workFiles = d.repo.status.Files
 		d.renderWork()
 	case modeCommits:
+		d.commitsHead = headKey(d.repo.status)
 		go func() {
 			commits, err := git.Commits(d.repo.path, commitLimit)
 			d.app.QueueUpdateDraw(func() {
@@ -998,20 +1070,30 @@ func (d *detailView) prChange(p pr.PR) *change {
 // --- content pane ----------------------------------------------------------
 
 // scheduleRight debounces content loads while the selection moves fast.
-func (d *detailView) scheduleRight() {
+func (d *detailView) scheduleRight() { d.loadRight(false) }
+
+// loadRight loads the content pane for the current state. With keep the
+// pane is re-read in place (same scroll position, no "loading…"), for a
+// file that changed under the user's eyes.
+func (d *detailView) loadRight(keep bool) {
 	d.rightGen++
 	gen := d.rightGen
 	if d.rightTimer != nil {
 		d.rightTimer.Stop()
 	}
-	title, load := d.rightJob()
+	title, load, path := d.rightJob()
 	d.content.SetTitle(tview.Escape(title))
+	d.rightPath, d.rightDone = path, false
 	if load == nil {
 		d.content.SetText("")
 		return
 	}
-	d.content.SetText("[gray]loading…[-]")
+	if !keep {
+		d.content.SetText("[gray]loading…[-]")
+	}
+	row, col := d.content.GetScrollOffset()
 	d.rightTimer = time.AfterFunc(60*time.Millisecond, func() {
+		sig := statFile(path) // before the read: a change during it is seen next tick
 		text, err := load()
 		d.app.QueueUpdateDraw(func() {
 			if gen != d.rightGen {
@@ -1021,13 +1103,19 @@ func (d *detailView) scheduleRight() {
 				text = "[red]" + tview.Escape(err.Error()) + "[-]"
 			}
 			d.content.SetText(text)
-			d.content.ScrollToBeginning()
+			d.rightSig, d.rightDone = sig, true
+			if keep {
+				d.content.ScrollTo(row, col)
+			} else {
+				d.content.ScrollToBeginning()
+			}
 		})
 	})
 }
 
-// rightJob returns the content title and a loader for the current state.
-func (d *detailView) rightJob() (string, func() (string, error)) {
+// rightJob returns the content title, a loader for the current state and,
+// for a working-tree file, its path (for tick to watch).
+func (d *detailView) rightJob() (string, func() (string, error), string) {
 	alt := d.showAlt[d.mode]
 	fileLabel := "diff"
 	if alt {
@@ -1037,15 +1125,16 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 	case d.mode == modeWork:
 		i := d.selectedIndex(d.list)
 		if i < 0 || i >= len(d.workFiles) {
-			return "", nil
+			return "", nil, ""
 		}
 		f := d.workFiles[i]
 		style := d.app.syntaxStyle
+		full := filepath.Join(d.repo.path, f.Path)
 		if alt {
 			return fmt.Sprintf(" %s [diff] ", f.Path), func() (string, error) {
 				out, err := git.WorkDiff(d.repo.path, f)
 				return colorizeDiff(out, style), err
-			}
+			}, full
 		}
 		return fmt.Sprintf(" %s [content] ", f.Path), func() (string, error) {
 			out, err := git.FileContent(d.repo.path, f.Path)
@@ -1053,37 +1142,37 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 				return "[gray]" + tview.Escape(out) + "[-]", err
 			}
 			return numbered(newHighlighter(f.Path, out, style).lines(out)), err
-		}
+		}, full
 	case d.mode == modeChange:
 		i := d.selectedIndex(d.list)
 		if i < 0 || i >= len(d.curFiles) {
-			return "", nil
+			return "", nil, ""
 		}
 		f := d.curFiles[i]
-		return fmt.Sprintf(" %s [%s] ", f.Path, fileLabel), func() (string, error) { return d.fixed.fileText(f, alt) }
+		return fmt.Sprintf(" %s [%s] ", f.Path, fileLabel), func() (string, error) { return d.fixed.fileText(f, alt) }, ""
 	case !d.threePane():
 		ch := d.selectedChange()
 		if ch == nil {
-			return "", nil
+			return "", nil, ""
 		}
 		if alt {
-			return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[1]), ch.alt
+			return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[1]), ch.alt, ""
 		}
-		return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[0]), ch.primary
+		return fmt.Sprintf(" %s [%s] ", ch.label, ch.labels[0]), ch.primary, ""
 	case d.layout == layoutContentFirst && d.msgMode:
 		ch := d.cur
 		if ch == nil {
-			return "", nil
+			return "", nil, ""
 		}
-		return fmt.Sprintf(" %s [message] ", ch.label), ch.message
+		return fmt.Sprintf(" %s [message] ", ch.label), ch.message, ""
 	default:
 		ch := d.cur
 		i := d.selectedIndex(d.files)
 		if ch == nil || i < 0 || i >= len(d.curFiles) {
-			return "", nil
+			return "", nil, ""
 		}
 		f := d.curFiles[i]
-		return fmt.Sprintf(" %s: %s [%s] ", ch.label, f.Path, fileLabel), func() (string, error) { return ch.fileText(f, alt) }
+		return fmt.Sprintf(" %s: %s [%s] ", ch.label, f.Path, fileLabel), func() (string, error) { return ch.fileText(f, alt) }, ""
 	}
 }
 

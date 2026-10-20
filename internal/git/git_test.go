@@ -118,3 +118,32 @@ func TestStatusAndCommits(t *testing.T) {
 		t.Fatalf("FileContent = %q, %v", content, err)
 	}
 }
+
+// TestTimeout: a git command that hangs (here: a fsmonitor hook that never
+// answers) is killed after Timeout and reported, instead of blocking.
+func TestTimeout(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-q")
+	hook := filepath.Join(root, "hang.sh")
+	write(t, root, "hang.sh", "#!/bin/sh\nsleep 60\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "config", "core.fsmonitor", hook)
+
+	old := Timeout
+	Timeout = 300 * time.Millisecond
+	defer func() { Timeout = old }()
+	start := time.Now()
+	_, err := GetStatus(repo)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want a timeout", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("took %s, the hung command was not killed", time.Since(start))
+	}
+}
