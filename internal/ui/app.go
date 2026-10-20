@@ -216,13 +216,16 @@ func (a *App) refresh() {
 	for _, s := range a.stack {
 		all = append(all, s.crumbs()...)
 	}
+	// Crumbs use an explicit RGB black and no bold: palette black is often
+	// remapped by terminal themes, and bold black renders as dark grey in
+	// many terminals, which made the inactive crumbs unreadable.
 	var cb strings.Builder
 	for i, c := range all {
-		bg := "gray"
+		bg := "#808080"
 		if i == len(all)-1 {
-			bg = "aqua"
+			bg = "#00ffff"
 		}
-		fmt.Fprintf(&cb, "[black:%s:b] %s [-:-:-] ", bg, tview.Escape(c))
+		fmt.Fprintf(&cb, "[#000000:%s] %s [-:-:-] ", bg, tview.Escape(c))
 	}
 	a.crumbTV.SetText(cb.String())
 }
