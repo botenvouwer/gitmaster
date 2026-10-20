@@ -3,23 +3,12 @@ package ui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/botenvouwer/gitmaster/internal/git"
 )
-
-type repoEntry struct {
-	name   string
-	path   string
-	status git.Status
-	loaded bool
-	err    error
-}
 
 type filterMode int
 
@@ -39,22 +28,20 @@ func (f filterMode) String() string {
 	return "all"
 }
 
-// masterView lists every git repo under a directory.
+// masterView lists the repos of the environment, or of one project.
 type masterView struct {
 	*tview.Flex
-	app   *App
-	dir   string
-	table *tview.Table
-	input *tview.InputField
+	app     *App
+	project string // "" for all repos
+	table   *tview.Table
+	input   *tview.InputField
 
-	repos   []*repoEntry
-	mode    filterMode
-	text    string
-	loadGen int
+	mode filterMode
+	text string
 }
 
-func newMaster(a *App, dir string) *masterView {
-	m := &masterView{Flex: tview.NewFlex().SetDirection(tview.FlexRow), app: a, dir: dir}
+func newMaster(a *App, project string) *masterView {
+	m := &masterView{Flex: tview.NewFlex().SetDirection(tview.FlexRow), app: a, project: project}
 
 	m.input = tview.NewInputField().SetLabel(" /> ").SetLabelColor(colorKey).
 		SetFieldBackgroundColor(tcell.ColorBlack).SetFieldTextColor(colorValue)
@@ -71,48 +58,72 @@ func newMaster(a *App, dir string) *masterView {
 
 	m.table = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
 	m.table.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
-	m.table.SetSelectedFunc(func(row, _ int) { m.open(row) })
+	m.table.SetSelectedFunc(func(row, _ int) { m.open() })
 	m.table.SetInputCapture(m.keys)
 
 	m.AddItem(m.input, 0, 0, false).AddItem(m.table, 0, 1, true)
 	return m
 }
 
-func (m *masterView) crumbs() []string             { return []string{"repos"} }
+func (m *masterView) crumbs() []string {
+	if m.project != "" {
+		return []string{m.project}
+	}
+	return []string{"repos"}
+}
+
 func (m *masterView) focusTarget() tview.Primitive { return m.table }
+func (m *masterView) start()                       { m.rebuild() }
+func (m *masterView) update()                      { m.rebuild() }
 
 func (m *masterView) hotkeys() []hotkey {
-	return []hotkey{
+	keys := []hotkey{
 		{"0", "all"},
 		{"1", "unpushed commits"},
 		{"2", "uncommitted / untracked"},
 		{"/", "filter by name"},
 		{"enter", "open repo"},
-		{"r", "reload"},
+		{"a", "add to project"},
 	}
+	if m.project != "" {
+		keys = append(keys, hotkey{"x", "remove from project"})
+	}
+	return append(keys, hotkey{"r", "rescan"})
+}
+
+// repos returns the repos in scope: all, or the project's members.
+func (m *masterView) repos() []*repoEntry {
+	e := m.app.env
+	if m.project == "" {
+		return e.repos
+	}
+	p := e.local.Project(m.project)
+	if p == nil {
+		return nil
+	}
+	var out []*repoEntry
+	for _, r := range e.repos {
+		if p.Has(r.name) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (m *masterView) info() [][2]string {
-	dirty, unpushed, loaded := 0, 0, 0
-	for _, r := range m.repos {
-		if !r.loaded {
-			continue
-		}
-		loaded++
-		if r.status.Dirty() {
-			dirty++
-		}
-		if r.status.Ahead > 0 {
-			unpushed++
-		}
+	repos := m.repos()
+	dirty, unpushed, loaded := m.app.env.counts(repos)
+	count := strconv.Itoa(len(repos))
+	if loaded < len(repos) {
+		count += fmt.Sprintf(" (%d loading)", len(repos)-loaded)
 	}
-	repos := strconv.Itoa(len(m.repos))
-	if loaded < len(m.repos) {
-		repos += fmt.Sprintf(" (%d loading)", len(m.repos)-loaded)
+	scope := [2]string{"Dir", shortenHome(m.app.env.dir)}
+	if m.project != "" {
+		scope = [2]string{"Project", m.project}
 	}
 	return [][2]string{
-		{"Dir", shortenHome(m.dir)},
-		{"Repos", repos},
+		scope,
+		{"Repos", count},
 		{"Dirty", fmt.Sprintf("%d uncommitted, %d unpushed", dirty, unpushed)},
 		{"Filter", m.mode.String()},
 	}
@@ -127,8 +138,6 @@ func (m *masterView) escape() bool {
 	}
 	return false
 }
-
-func (m *masterView) start() { m.reload() }
 
 func (m *masterView) showInput(show bool) {
 	if show {
@@ -158,8 +167,14 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case '/':
 			m.showInput(true)
 			return nil
+		case 'a':
+			m.addToProject()
+			return nil
+		case 'x':
+			m.removeFromProject()
+			return nil
 		case 'r':
-			m.reload()
+			m.app.scan()
 			return nil
 		case 'J':
 			m.move(5)
@@ -188,37 +203,45 @@ func (m *masterView) move(delta int) {
 	m.table.Select(row, 0)
 }
 
-func (m *masterView) reload() {
-	m.loadGen++
-	gen := m.loadGen
-	paths, err := git.ScanRepos(m.dir)
-	if err != nil {
-		m.app.FlashErr(err)
+func (m *masterView) addToProject() {
+	r := m.selected()
+	local := m.app.env.local
+	if r == nil || local == nil {
 		return
 	}
-	m.repos = nil
-	for _, p := range paths {
-		m.repos = append(m.repos, &repoEntry{name: filepath.Base(p), path: p})
+	var names []string
+	for _, p := range local.Projects {
+		names = append(names, p.Name)
 	}
-	m.rebuild()
-	m.app.refresh()
+	items := append(append([]string{}, names...), "+ new project…")
+	m.app.pick("Add "+r.name+" to project", items, func(i int) {
+		if i < len(names) {
+			m.app.addRepoToProject(names[i], r.name)
+			return
+		}
+		m.app.prompt("New project name", "", func(name string) {
+			if _, err := local.AddProject(name); err != nil {
+				m.app.FlashErr(err)
+				return
+			}
+			m.app.addRepoToProject(name, r.name)
+		})
+	})
+}
 
-	sem := make(chan struct{}, 8)
-	for _, r := range m.repos {
-		go func(r *repoEntry) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			st, err := git.GetStatus(r.path)
-			m.app.QueueUpdateDraw(func() {
-				if gen != m.loadGen {
-					return
-				}
-				r.status, r.err, r.loaded = st, err, true
-				m.rebuild()
-				m.app.refresh()
-			})
-		}(r)
+func (m *masterView) removeFromProject() {
+	r := m.selected()
+	if r == nil || m.project == "" || m.app.env.local == nil {
+		return
 	}
+	p := m.app.env.local.Project(m.project)
+	if p == nil || !p.Has(r.name) {
+		return
+	}
+	p.Toggle(r.name)
+	m.app.saveLocal()
+	m.app.Flash("removed " + r.name + " from " + m.project)
+	m.app.notify()
 }
 
 func (m *masterView) visible(r *repoEntry) bool {
@@ -262,7 +285,7 @@ func (m *masterView) rebuild() {
 	}
 
 	row, selectRow := 1, 1
-	for _, r := range m.repos {
+	for _, r := range m.repos() {
 		if !m.visible(r) {
 			continue
 		}
@@ -273,25 +296,53 @@ func (m *masterView) rebuild() {
 		row++
 	}
 	count := row - 1
-	title := fmt.Sprintf(" Repos(%s)[%d] ", m.mode, count)
-	if m.text != "" {
-		title = fmt.Sprintf(" Repos(%s)[%d] /%s ", m.mode, count, m.text)
+	scope := m.mode.String()
+	if m.project != "" {
+		scope = m.project + ":" + scope
 	}
-	m.table.SetTitle(title)
+	title := fmt.Sprintf(" Repos(%s)[%d] ", scope, count)
+	if m.text != "" {
+		title += "/" + m.text + " "
+	}
+	m.table.SetTitle(tview.Escape(title))
 	if count > 0 {
 		m.table.Select(selectRow, 0)
 	}
 }
 
+// stateText summarises a repo for the STATE column.
+func stateText(r *repoEntry) (string, tcell.Color) {
+	if !r.loaded {
+		if r.cached {
+			return "cached", colorMuted
+		}
+		return "loading…", colorMuted
+	}
+	if r.err != nil {
+		return trunc(r.err.Error(), 60), colorError
+	}
+	var state []string
+	if r.status.Ahead > 0 {
+		state = append(state, "unpushed")
+	}
+	if r.status.Dirty() {
+		state = append(state, "uncommitted")
+	}
+	if r.status.Conflicted > 0 {
+		state = append(state, "conflicts")
+	}
+	if len(state) == 0 {
+		return "clean", colorClean
+	}
+	return strings.Join(state, ","), colorDirty
+}
+
 func (m *masterView) setRow(row int, r *repoEntry) {
 	name := tview.NewTableCell(tview.Escape(r.name)).SetTextColor(colorValue).SetExpansion(1).SetReference(r)
 	m.table.SetCell(row, 0, name)
-	if !r.loaded {
-		m.table.SetCell(row, 8, tview.NewTableCell("loading…").SetTextColor(colorMuted))
-		return
-	}
-	if r.err != nil {
-		m.table.SetCell(row, 8, tview.NewTableCell(trunc(r.err.Error(), 60)).SetTextColor(colorError))
+	text, color := stateText(r)
+	m.table.SetCell(row, 8, tview.NewTableCell(text).SetTextColor(color))
+	if (!r.loaded && !r.cached) || (r.loaded && r.err != nil) {
 		return
 	}
 	s := r.status
@@ -303,7 +354,7 @@ func (m *masterView) setRow(row int, r *repoEntry) {
 		return c
 	}
 	branch := s.Branch
-	if !s.HasUpstream && s.HasRemote {
+	if r.loaded && !s.HasUpstream && s.HasRemote {
 		branch += " (no upstream)"
 	}
 	m.table.SetCell(row, 1, tview.NewTableCell(tview.Escape(branch)).SetTextColor(colorValue))
@@ -319,25 +370,9 @@ func (m *masterView) setRow(row int, r *repoEntry) {
 		last += "  " + trunc(s.LastSubject, 40)
 	}
 	m.table.SetCell(row, 7, tview.NewTableCell(tview.Escape(last)).SetTextColor(colorMuted))
-
-	var state []string
-	if s.Ahead > 0 {
-		state = append(state, "unpushed")
-	}
-	if s.Dirty() {
-		state = append(state, "uncommitted")
-	}
-	if s.Conflicted > 0 {
-		state = append(state, "conflicts")
-	}
-	stateCell := tview.NewTableCell("clean").SetTextColor(colorClean)
-	if len(state) > 0 {
-		stateCell.SetText(strings.Join(state, ",")).SetTextColor(colorDirty)
-	}
-	m.table.SetCell(row, 8, stateCell)
 }
 
-func (m *masterView) open(row int) {
+func (m *masterView) open() {
 	r := m.selected()
 	if r == nil {
 		return

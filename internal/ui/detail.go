@@ -78,6 +78,7 @@ func newDetail(a *App, r *repoEntry) *detailView {
 
 func (d *detailView) crumbs() []string { return []string{d.repo.name, d.mode.String()} }
 func (d *detailView) escape() bool     { return false }
+func (d *detailView) update()          {}
 
 func (d *detailView) focusTarget() tview.Primitive {
 	if d.focusRight {

@@ -1,6 +1,7 @@
 # gitmaster
 
-A k9s-style terminal UI for all the git repos in a directory.
+A k9s-style terminal UI for all the git repos in a directory, grouped into
+projects.
 
 ```
 gitmaster            # repos under the current directory
@@ -9,15 +10,27 @@ gitmaster ~/repo/x   # repos under another directory
 
 ## Keys
 
-Master screen: `0` all, `1` unpushed commits, `2` uncommitted/untracked,
-`/` filter by name, `enter` open repo, `r` reload.
+Home: `enter` open all repos or a project, `n` new project, `e` edit a
+project's repos, `R` rename, `d` delete, `r` rescan.
 
-Repo screen: `w` open work, `c` commits, `p` pull requests, `←`/`→` switch
-pane, `d` toggle content/diff (open work), diff/full file (commits),
-details/diff (PRs), `m` mine/all PRs, `o` open PR in browser.
+Repos: `0` all, `1` unpushed commits, `2` uncommitted/untracked, `/` filter by
+name, `enter` open repo, `a` add repo to a project, `x` remove from the current
+project, `r` rescan.
+
+Project repos: `space`/`enter` toggle a repo, `esc` done.
+
+Repo: `w` open work, `c` commits, `p` pull requests, `←`/`→` switch pane,
+`d` toggle content/diff (open work), diff/full file (commits), details/diff
+(PRs), `m` mine/all PRs, `o` open PR in browser.
 
 Everywhere: `↑`/`↓` one line, `shift+↑/↓` or `J`/`K` five lines, mouse wheel
 scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
+
+## Files
+
+- `~/.gitmaster/config.json` — global settings and the directories you opened.
+- `<dir>/.gitmaster/config.json` — the projects defined for that directory.
+- `<dir>/.gitmaster/cache.json` — last scan, shown until fresh status arrives.
 
 ## Install
 

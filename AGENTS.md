@@ -1,14 +1,22 @@
 # gitmaster
 
-k9s-style terminal UI (Go) for browsing all git repositories inside a directory.
-Personal tool of William Loosman; lives in the `namsool` namespace.
+k9s-style terminal UI (Go) for browsing all git repositories inside a directory,
+grouped into projects. Personal tool of William Loosman; lives in the `namsool`
+namespace.
 
 ## Purpose
 
-- Master screen: every git repo directly under `$PWD` (or the dir given as
-  argument) with branch, ahead/behind, staged/modified/untracked counts and a
-  state column. Quick filters: all / unpushed commits / uncommitted work.
-- Repo detail screen with three view modes, each a two-pane layout
+- **Home screen** (entry): one row for "all repos" plus one row per project of
+  this directory, with repo / uncommitted / unpushed / missing counts.
+  `n` new project, `e` edit a project's repos, `R` rename, `d` delete, `r` rescan.
+- **Repos screen**: the repos of the directory, or of one project, with branch,
+  ahead/behind, staged/modified/untracked counts and a state column. Quick
+  filters: all / unpushed commits / uncommitted work, plus a name filter.
+  `a` adds the selected repo to a project (picker, or a new one), `x` removes
+  it from the current project.
+- **Project repos editor**: checklist of every repo; space/enter toggles
+  membership, saved immediately.
+- **Repo detail screen** with three view modes, each a two-pane layout
   (list left, content right):
   - **open work** (`w`): uncommitted + untracked files; right pane shows file
     content, `d` toggles to the diff against HEAD.
@@ -17,13 +25,27 @@ Personal tool of William Loosman; lives in the `namsool` namespace.
   - **pull requests** (`p`): open PRs on `origin`; right pane shows details,
     `d` toggles to the PR diff; `m` toggles mine/all; `o` opens in browser.
 
+## Configuration
+
+- `~/.gitmaster/config.json` (global): `settings` (empty for now) and
+  `environments` (directories gitmaster was opened in, most recent first).
+  Created on first start.
+- `<dir>/.gitmaster/config.json` (local): `projects` — name + list of repo
+  directory names. Created the first time a directory with repos is opened.
+  A directory without repos gets no `.gitmaster` and the home screen says so.
+- `<dir>/.gitmaster/cache.json`: last scan result per repo, used to pre-fill
+  the tables (state "cached") until the fresh status arrives.
+
 ## Structure
 
 ```
 main.go            flags + bootstrap
+internal/config    global / local config + scan cache (JSON)
 internal/git       git CLI wrappers (status/log/show/diff, PR ref fetch)
 internal/pr        PR listing via `gh` (GitHub) and `tea` (Gitea)
-internal/ui        tview UI: app.go (shell/nav/help), master.go, detail.go,
+internal/ui        tview UI: app.go (shell/nav/help), env.go (repo scan shared
+                   by all views), home.go, master.go, members.go, detail.go,
+                   modal.go (prompt/pick/confirm), table.go (empty-table guard),
                    format.go (diff colouring, ages), styles.go (palette, logo)
 ```
 
@@ -37,14 +59,19 @@ internal/ui        tview UI: app.go (shell/nav/help), master.go, detail.go,
 
 - Shell out to `git` rather than using go-git, so the user's config,
   credential helpers and SSH setup are honoured.
+- The repo list and statuses live in `App.env` (`internal/ui/env.go`) and are
+  loaded once by `App.scan()`; views render from it and are told about changes
+  through `view.update()` (`App.notify()`).
 - All blocking work runs in goroutines; UI mutation only via
-  `app.QueueUpdateDraw`. Loads carry a generation counter (`leftGen`,
-  `rightGen`, `loadGen`) so stale results are dropped.
-- Anything rendered into a `TextView` or `TableCell` goes through
-  `tview.Escape` (dynamic colour tags are on).
-- Views implement the `view` interface in `internal/ui/app.go`
-  (crumbs, hotkeys, info, start, focusTarget, escape) and are pushed/popped on
-  the navigation stack in `App`.
+  `app.QueueUpdateDraw`. Loads carry a generation counter so stale results
+  are dropped.
+- Anything rendered into a `TextView`, `TableCell` or box title goes through
+  `tview.Escape` (dynamic colour tags are on; `[x]` or `[diff]` would vanish).
+- Views implement the `view` interface in `internal/ui/app.go` and are
+  pushed/popped on the navigation stack in `App`. Modal dialogs come from
+  `modal.go` and are closed by Esc in `globalKeys`.
+- Never let a navigation key reach a tview `Table` that only has its header
+  row: tview v0.42 loops forever (see `table.go`).
 - PR diffs are fetched into the temporary `refs/gitmaster/pr/<n>/{head,base}`
   refs and deleted afterwards; `refs/pull/<n>/head` exists on both GitHub and
   Gitea.
@@ -54,9 +81,12 @@ internal/ui        tview UI: app.go (shell/nav/help), master.go, detail.go,
 ```
 make install     # go install → ~/go/bin/gitmaster (on PATH)
 make build       # ./gitmaster
+go test ./...
 ```
 
 After every code change, re-run `make install` so the binary on PATH is current.
+Headless UI checks: run the binary in a detached tmux session and use
+`send-keys` / `capture-pane -p`; send Escape in its own `send-keys` call.
 
 ## Gotchas
 

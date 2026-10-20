@@ -9,6 +9,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/botenvouwer/gitmaster/internal/config"
 )
 
 type hotkey struct{ key, desc string }
@@ -20,15 +22,19 @@ type view interface {
 	hotkeys() []hotkey
 	info() [][2]string
 	start()
+	update() // repo or project data changed
 	focusTarget() tview.Primitive
 	escape() bool // true when the view consumed Esc itself
 }
 
-// App owns the tview application and the navigation stack.
+// App owns the tview application, the environment and the navigation stack.
 type App struct {
 	*tview.Application
-	version string
-	dir     string
+	version   string
+	dir       string
+	global    *config.Global
+	globalErr error
+	env       *environment
 
 	pages   *tview.Pages
 	header  *tview.Flex
@@ -42,12 +48,15 @@ type App struct {
 	stack      []view
 	flashTimer *time.Timer
 	helpShown  bool
+	modal      bool
 	prevFocus  tview.Primitive
 }
 
 // New builds the application for the given directory.
 func New(dir, version string) *App {
 	a := &App{Application: tview.NewApplication(), dir: dir, version: version}
+	a.env = &environment{dir: dir}
+	a.global, a.globalErr = config.LoadGlobal()
 
 	a.infoTV = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	a.keysTV = tview.NewTextView().SetDynamicColors(true)
@@ -91,9 +100,13 @@ func New(dir, version string) *App {
 	return a
 }
 
-// Run starts on the master screen and blocks until quit.
+// Run starts on the home screen, scans the directory and blocks until quit.
 func (a *App) Run() error {
-	a.push(newMaster(a, a.dir))
+	a.push(newHome(a))
+	if a.globalErr != nil {
+		a.FlashErr(a.globalErr)
+	}
+	a.scan()
 	return a.Application.Run()
 }
 
@@ -125,7 +138,9 @@ func (a *App) pop() {
 	a.pages.RemovePage(pageName(len(a.stack) - 1))
 	a.stack = a.stack[:len(a.stack)-1]
 	a.pages.ShowPage(pageName(len(a.stack) - 1))
-	a.SetFocus(a.top().focusTarget())
+	top := a.top()
+	top.update()
+	a.SetFocus(top.focusTarget())
 	a.refresh()
 }
 
@@ -217,6 +232,13 @@ func (a *App) globalKeys(ev *tcell.EventKey) *tcell.EventKey {
 	if ev.Key() == tcell.KeyCtrlC {
 		a.Stop()
 		return nil
+	}
+	if a.modal {
+		if ev.Key() == tcell.KeyEsc {
+			a.closeModal()
+			return nil
+		}
+		return ev
 	}
 	if a.helpShown {
 		switch {
