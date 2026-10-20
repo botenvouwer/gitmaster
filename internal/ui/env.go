@@ -350,6 +350,19 @@ func (a *App) addRepoToProject(project, repo string) {
 	a.notify()
 }
 
+// openURL resolves a web address in the background and opens the browser.
+func (a *App) openURL(resolve func() (string, error)) {
+	go func() {
+		u, err := resolve()
+		if err == nil {
+			err = pr.OpenInBrowser(u)
+		}
+		if err != nil {
+			a.QueueUpdateDraw(func() { a.FlashErr(err) })
+		}
+	}()
+}
+
 // notify tells every view on the stack that repo/project data changed.
 func (a *App) notify() {
 	for _, v := range a.stack {

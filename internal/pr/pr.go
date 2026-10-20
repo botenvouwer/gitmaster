@@ -42,6 +42,20 @@ type Remote struct {
 	Slug     string // owner/repo
 	Provider Provider
 	Login    string // our own user name on that host
+	WebURL   string // https://host/owner/repo
+}
+
+// CommitURL is the web page of a commit (same path on GitHub and Gitea/Forgejo).
+func CommitURL(r Remote, sha string) string {
+	if r.WebURL == "" {
+		return ""
+	}
+	return r.WebURL + "/commit/" + sha
+}
+
+type teaLogin struct {
+	user string
+	url  string
 }
 
 // PR is one pull request.
@@ -65,7 +79,7 @@ var (
 	ghLoginOnce sync.Once
 	ghLogin     string
 	teaOnce     sync.Once
-	teaLogins   map[string]string // host -> user
+	teaLogins   map[string]teaLogin // host or ssh host -> login
 )
 
 // Detect figures out which provider and login serve the repo's "origin".
@@ -81,6 +95,7 @@ func Detect(dir string) (Remote, error) {
 	}
 	if strings.EqualFold(r.Host, "github.com") {
 		r.Provider = GitHub
+		r.WebURL = "https://github.com/" + r.Slug
 		ghLoginOnce.Do(func() {
 			if l, err := runCmd(dir, "gh", "api", "user", "-q", ".login"); err == nil {
 				ghLogin = strings.TrimSpace(l)
@@ -90,27 +105,33 @@ func Detect(dir string) (Remote, error) {
 		return r, nil
 	}
 	teaOnce.Do(func() {
-		teaLogins = map[string]string{}
+		teaLogins = map[string]teaLogin{}
 		out, err := runCmd(dir, "tea", "logins", "list", "-o", "json")
 		if err != nil {
 			return
 		}
 		var logins []struct {
-			URL  string `json:"url"`
-			User string `json:"user"`
+			URL     string `json:"url"`
+			SSHHost string `json:"ssh_host"`
+			User    string `json:"user"`
 		}
 		if json.Unmarshal([]byte(out), &logins) != nil {
 			return
 		}
 		for _, l := range logins {
+			login := teaLogin{user: l.User, url: strings.TrimRight(l.URL, "/")}
 			if u, err := url.Parse(l.URL); err == nil {
-				teaLogins[strings.ToLower(u.Host)] = l.User
+				teaLogins[strings.ToLower(u.Host)] = login
+			}
+			if l.SSHHost != "" {
+				teaLogins[strings.ToLower(l.SSHHost)] = login
 			}
 		}
 	})
-	if user, ok := teaLogins[strings.ToLower(r.Host)]; ok {
+	if login, ok := teaLogins[strings.ToLower(r.Host)]; ok {
 		r.Provider = Gitea
-		r.Login = user
+		r.Login = login.user
+		r.WebURL = login.url + "/" + r.Slug
 		return r, nil
 	}
 	return r, fmt.Errorf("no gh or tea login for host %s", r.Host)

@@ -25,3 +25,17 @@ func TestParseRemote(t *testing.T) {
 		}
 	}
 }
+
+func TestCommitURL(t *testing.T) {
+	gh := Remote{Provider: GitHub, WebURL: "https://github.com/acme/tool"}
+	if got := CommitURL(gh, "abc"); got != "https://github.com/acme/tool/commit/abc" {
+		t.Fatalf("github: %s", got)
+	}
+	tea := Remote{Provider: Gitea, WebURL: "https://git.example.nl/acme/project"}
+	if got := CommitURL(tea, "abc"); got != "https://git.example.nl/acme/project/commit/abc" {
+		t.Fatalf("gitea: %s", got)
+	}
+	if CommitURL(Remote{}, "abc") != "" {
+		t.Fatal("unknown remote must give no url")
+	}
+}

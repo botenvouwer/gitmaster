@@ -355,8 +355,23 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			}
 			switch ev.Rune() {
 			case 'o':
-				if ref, ok := m.selectedLive(); ok && (ref.kind == liveOpenPR || ref.kind == liveClosedPR) {
-					m.openBrowser(ref.pr.URL)
+				if ref, ok := m.selectedLive(); ok {
+					switch ref.kind {
+					case liveOpenPR, liveClosedPR:
+						m.openBrowser(ref.pr.URL)
+					case liveCommit:
+						dir, sha := ref.repo.path, ref.commit.SHA
+						m.app.openURL(func() (string, error) {
+							remote, err := pr.Detect(dir)
+							if err != nil {
+								return "", err
+							}
+							if u := pr.CommitURL(remote, sha); u != "" {
+								return u, nil
+							}
+							return "", fmt.Errorf("no web url known for %s", remote.Host)
+						})
+					}
 				}
 				return nil
 			case 'r':

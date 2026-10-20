@@ -93,6 +93,7 @@ type change struct {
 	primary    func() (string, error) // default layout content
 	alt        func() (string, error) // default layout content after d
 	labels     [2]string              // titles for primary / alt
+	url        func() (string, error) // web page of the change
 }
 
 // detailView shows one repo: a list on the left (open-work files, commits or
@@ -238,6 +239,7 @@ func (d *detailView) hotkeys() []hotkey {
 		return []hotkey{
 			{"d", "diff / full file"},
 			{"←/→", "switch pane"},
+			{"o", "open in browser"},
 			{"/", "filter"},
 			{"esc", "back"},
 		}
@@ -254,7 +256,8 @@ func (d *detailView) hotkeys() []hotkey {
 	case modeWork:
 		keys = append(keys, hotkey{"d", "content / diff"})
 	case modeCommits:
-		keys = append(keys, hotkey{"enter", "files of commit"}, hotkey{"d", "diff / full file"}, hotkey{"v", "layout"})
+		keys = append(keys, hotkey{"enter", "files of commit"}, hotkey{"d", "diff / full file"}, hotkey{"v", "layout"},
+			hotkey{"o", "open in browser"})
 	case modePRs:
 		keys = append(keys, hotkey{"enter", "files of PR"}, hotkey{"d", "details / diff"}, hotkey{"v", "layout"},
 			hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
@@ -484,10 +487,12 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 				d.renderPRs()
 			}
 		case 'o':
-			if p := d.selectedPR(); p != nil {
-				if err := pr.OpenInBrowser(p.URL); err != nil {
-					d.app.FlashErr(err)
-				}
+			ch := d.fixed
+			if d.mode != modeChange {
+				ch = d.selectedChange()
+			}
+			if ch != nil {
+				d.app.openURL(ch.url)
 			}
 		case 'r':
 			if d.mode != modeChange {
@@ -893,6 +898,16 @@ func (d *detailView) commitChange(c git.Commit) *change {
 	}
 	return &change{
 		key: c.SHA, label: c.Short,
+		url: func() (string, error) {
+			remote, err := pr.Detect(dir)
+			if err != nil {
+				return "", err
+			}
+			if u := pr.CommitURL(remote, c.SHA); u != "" {
+				return u, nil
+			}
+			return "", fmt.Errorf("no web url known for %s", remote.Host)
+		},
 		files: func() ([]git.ChangedFile, error) { return git.CommitFiles(dir, c.SHA) },
 		fileText: func(f git.ChangedFile, full bool) (string, error) {
 			out, err := git.CommitFileDiff(dir, c.SHA, f, full)
@@ -940,6 +955,7 @@ func (d *detailView) prChange(p pr.PR) *change {
 		},
 		message: details,
 		primary: details,
+		url:     func() (string, error) { return p.URL, nil },
 		alt: func() (string, error) {
 			base, head, err := refs()
 			if err != nil {

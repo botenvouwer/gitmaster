@@ -27,8 +27,8 @@ repo on that PR, `m` mine/all, `o` open in browser, `r` reload.
 Live status: your work in the repos in scope over the last 12h, 24h or 3d
 (`1`, `2`, `3`; the windows are `liveWindowsHours` in the config): open work
 per repo, your commits not in a pull request, your open PRs and your PRs
-closed in that window. `enter` opens the repo at that item, `o` opens a PR
-in the browser.
+closed in that window. `enter` opens the repo at that item, `o` opens a
+commit or PR in the browser.
 
 The chosen view (repos, pull requests or live status), the live window, the
 repo-screen mode, the layout and the PR mine/all filter are remembered
@@ -38,7 +38,7 @@ Project repos: `space`/`enter` toggle a repo, `esc` done.
 
 Repo: `w` open work, `c` commits, `p` pull requests, `←`/`→` switch pane,
 `d` toggle content/diff (open work), diff/full file (commits), details/diff
-(PRs), `m` mine/all PRs, `o` open PR in browser, `enter` on a commit or PR
+(PRs), `m` mine/all PRs, `o` open the commit or PR in the browser, `enter` on a commit or PR
 opens its files with a per-file diff, `v` cycles the layout: default
 (list | content), files first (list | files | content) or content first
 (list | content | files, the content shows the message while the list is
