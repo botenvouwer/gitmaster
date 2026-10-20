@@ -68,7 +68,7 @@ type detailView struct {
 }
 
 func newDetail(a *App, r *repoEntry) *detailView {
-	d := &detailView{Flex: tview.NewFlex(), app: a, repo: r, mineOnly: true, mode: parseMode(a.ui().DetailView)}
+	d := &detailView{Flex: tview.NewFlex(), app: a, repo: r, mineOnly: a.ui().MineOnly(), mode: parseMode(a.ui().DetailView)}
 	d.showAlt[modeCommits] = false // commits: diff by default, alt = full file
 
 	d.left = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
@@ -249,6 +249,8 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'm':
 			if d.mode == modePRs {
 				d.mineOnly = !d.mineOnly
+				d.app.ui().SetMineOnly(d.mineOnly)
+				d.app.saveGlobal()
 				d.renderPRs()
 			}
 		case 'o':

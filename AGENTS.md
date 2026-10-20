@@ -32,10 +32,11 @@ namespace.
   overview** of the same scope: every open PR of those repos (streamed in
   per repo, cached on the `repoEntry`), `m` mine/all, `o` browser, `enter`
   opens the repo's PR view on that PR.
-- **Remembered views**: the master view (repos/pulls) and the repo-screen
-  mode (open work/commits/pull requests) are stored in the global config's
-  `ui` section whenever they are switched, so new screens and the next start
-  open in the same view.
+- **Remembered views**: the master view (repos/pulls), the repo-screen
+  mode (open work/commits/pull requests) and the PR mine/all filter (one
+  setting shared by the overview and the repo's PR view) are stored in the
+  global config's `ui` section whenever they are switched, so new screens
+  and the next start open in the same view.
 - **Project repos editor**: checklist of every repo; space/enter toggles
   membership, saved immediately.
 - **Repo detail screen** with three view modes, each a two-pane layout

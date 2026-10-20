@@ -70,7 +70,7 @@ type masterView struct {
 }
 
 func newMaster(a *App, project string) *masterView {
-	m := &masterView{app: a, project: project, view: parseMasterMode(a.ui().MasterView), allPRs: true}
+	m := &masterView{app: a, project: project, view: parseMasterMode(a.ui().MasterView), allPRs: !a.ui().MineOnly()}
 	table := tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
 	table.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle).SetBorderColor(colorFocus)
 	table.SetSelectedFunc(func(row, _ int) { m.open() })
@@ -238,6 +238,8 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			switch ev.Rune() {
 			case 'm':
 				m.allPRs = !m.allPRs
+				m.app.ui().SetMineOnly(!m.allPRs)
+				m.app.saveGlobal()
 				m.rebuild()
 				return nil
 			case 'o':

@@ -53,6 +53,18 @@ type Environment struct {
 type UIState struct {
 	MasterView string `json:"masterView"` // "repos" or "pulls"
 	DetailView string `json:"detailView"` // "open work", "commits" or "pull requests"
+	PRFilter   string `json:"prFilter"`   // "all" or "mine", shared by the PR overview and the repo's PR view
+}
+
+// MineOnly reports whether pull-request lists should show only the user's own.
+func (u UIState) MineOnly() bool { return u.PRFilter == "mine" }
+
+// SetMineOnly stores the pull-request filter.
+func (u *UIState) SetMineOnly(mine bool) {
+	u.PRFilter = "all"
+	if mine {
+		u.PRFilter = "mine"
+	}
 }
 
 // Global is the user-wide configuration.

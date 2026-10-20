@@ -23,8 +23,8 @@ repo to a project, `x` remove from the current project, `r` rescan.
 Pull-request overview: all open PRs of the repos in scope; `enter` opens the
 repo on that PR, `m` mine/all, `o` open in browser, `r` reload.
 
-The chosen view (repos or pull requests) and the repo-screen mode are
-remembered across screens and restarts.
+The chosen view (repos or pull requests), the repo-screen mode and the PR
+mine/all filter are remembered across screens and restarts.
 
 Project repos: `space`/`enter` toggle a repo, `esc` done.
 
