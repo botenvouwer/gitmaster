@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -316,9 +317,22 @@ func teaArchived(out string) bool {
 	return false
 }
 
-// OpenInBrowser opens the URL with the OS default handler.
+// OpenInBrowser opens the URL with the user's browser: $BROWSER when set,
+// otherwise the platform's default handler.
 func OpenInBrowser(u string) error {
-	return exec.Command("open", u).Start()
+	if b := os.Getenv("BROWSER"); b != "" {
+		return exec.Command(b, u).Start()
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", u).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+	}
+	if _, err := exec.LookPath("xdg-open"); err != nil {
+		return fmt.Errorf("no browser found: install xdg-utils or set $BROWSER")
+	}
+	return exec.Command("xdg-open", u).Start()
 }
 
 func runCmd(dir, name string, args ...string) (string, error) {

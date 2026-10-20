@@ -35,6 +35,7 @@ type App struct {
 	global    *config.Global
 	globalErr error
 	env       *environment
+	screen    tcell.Screen
 
 	pages   *tview.Pages
 	header  *tview.Flex
@@ -108,6 +109,10 @@ func New(dir, version string) *App {
 
 	a.SetRoot(root, true).EnableMouse(true)
 	a.SetInputCapture(a.globalKeys)
+	if screen, err := tcell.NewScreen(); err == nil {
+		a.screen = screen // kept for the OSC 52 clipboard fallback
+		a.SetScreen(screen)
+	}
 	return a
 }
 

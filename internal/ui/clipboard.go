@@ -7,21 +7,32 @@ import (
 	"strings"
 )
 
-// copyToClipboard puts text on the system clipboard.
-func copyToClipboard(text string) error {
-	var candidates [][]string
-	if runtime.GOOS == "darwin" {
-		candidates = [][]string{{"pbcopy"}}
-	} else {
-		candidates = [][]string{{"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}}
+// clipboardTools are tried in order; the first one installed wins.
+func clipboardTools() [][]string {
+	switch runtime.GOOS {
+	case "darwin":
+		return [][]string{{"pbcopy"}}
+	case "windows":
+		return [][]string{{"clip"}}
 	}
-	for _, c := range candidates {
+	return [][]string{{"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}}
+}
+
+// copyToClipboard puts text on the system clipboard through a native tool,
+// falling back to the terminal's OSC 52 clipboard (works over SSH when the
+// terminal allows it).
+func (a *App) copyToClipboard(text string) error {
+	for _, c := range clipboardTools() {
 		if _, err := exec.LookPath(c[0]); err != nil {
 			continue
 		}
 		cmd := exec.Command(c[0], c[1:]...)
 		cmd.Stdin = strings.NewReader(text)
 		return cmd.Run()
+	}
+	if a.screen != nil {
+		a.screen.SetClipboard([]byte(text))
+		return nil
 	}
 	return errors.New("no clipboard tool found (pbcopy, wl-copy, xclip or xsel)")
 }
@@ -32,7 +43,7 @@ func (a *App) copyText(what, text string) {
 		a.Flash("nothing to copy")
 		return
 	}
-	if err := copyToClipboard(text); err != nil {
+	if err := a.copyToClipboard(text); err != nil {
 		a.FlashErr(err)
 		return
 	}

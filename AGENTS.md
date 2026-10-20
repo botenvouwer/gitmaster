@@ -11,8 +11,14 @@ namespace.
   `n` new project, `e` edit a project's repos, `R` rename, `d` delete, `r` rescan.
 - **Every list** has a k9s-style `/` text filter (`internal/ui/filter.go`):
   type to narrow, Enter keeps it (shown in the title), Esc clears it.
-- **`c` copies** the selected item to the clipboard (`clipboard.go`, pbcopy
-  on macOS): commit hash, file or repo path, PR url.
+- **`c` copies** the selected item to the clipboard (`clipboard.go`): commit
+  hash, file or repo path, PR url. pbcopy on macOS; wl-copy, xclip or xsel
+  on Linux; OSC 52 through the terminal as the fallback (works over SSH).
+- **Platforms**: macOS and Linux are supported (Windows compiles but is
+  untested). Platform differences live in `clipboard.go` and
+  `pr.OpenInBrowser` (`open` / `xdg-open` / `$BROWSER`); everything else is
+  plain Go, `git`, `gh` and `tea`. `make check` cross-compiles for all
+  platforms in `PLATFORMS`, `make build-all` writes the binaries to `dist/`.
 - **Archived repos** (archived on GitHub/Gitea) are hidden by default; `A`
   toggles them for the session, `settings.showArchived` sets the default.
   The flag comes from `gh repo view --json isArchived` / the `(archived)`
@@ -133,7 +139,8 @@ internal/ui        tview UI: app.go (shell/nav/help), env.go (repo scan + remote
 ```
 make install     # go install → ~/go/bin/gitmaster (on PATH)
 make build       # ./gitmaster
-go test ./...
+make check       # vet + tests + cross-compile for darwin/linux, amd64/arm64
+make build-all   # dist/gitmaster-<os>-<arch>
 ```
 
 After every code change, re-run `make install` so the binary on PATH is current.

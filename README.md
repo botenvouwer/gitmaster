@@ -61,8 +61,12 @@ scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
 ## Install
 
 ```
-make install   # → ~/go/bin/gitmaster
+make install     # → ~/go/bin/gitmaster (needs Go)
+make build-all   # dist/gitmaster-<os>-<arch> for macOS and Linux, amd64/arm64
 ```
 
-Requires `git`; the pull-request view uses `gh` (GitHub) or `tea` (Gitea)
-with your existing logins.
+Runs on macOS and Linux. Requires `git`; the pull-request view uses `gh`
+(GitHub) or `tea` (Gitea/Forgejo) with your existing logins. Opening in the
+browser uses `open` on macOS and `xdg-open` on Linux (`$BROWSER` overrides
+both). Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on
+Linux, falling back to the terminal's OSC 52 clipboard.
