@@ -169,7 +169,7 @@ func (m *masterView) keys(ev *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 	}
-	return ev
+	return swallowWhenEmpty(m.table, ev)
 }
 
 func dirOf(k tcell.Key) int {
@@ -180,6 +180,9 @@ func dirOf(k tcell.Key) int {
 }
 
 func (m *masterView) move(delta int) {
+	if m.table.GetRowCount() <= 1 {
+		return
+	}
 	row, _ := m.table.GetSelection()
 	row = max(1, min(m.table.GetRowCount()-1, row+delta))
 	m.table.Select(row, 0)

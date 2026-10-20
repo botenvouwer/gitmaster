@@ -207,11 +207,20 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'K':
 			d.scroll(-5)
 		default:
-			return ev
+			return d.passThrough(ev)
 		}
 		return nil
 	}
-	return ev
+	return d.passThrough(ev)
+}
+
+// passThrough hands a key to the focused primitive, except that an empty
+// left table gets nothing (see swallowWhenEmpty).
+func (d *detailView) passThrough(ev *tcell.EventKey) *tcell.EventKey {
+	if d.focusRight {
+		return ev
+	}
+	return swallowWhenEmpty(d.left, ev)
 }
 
 // scroll moves the focused pane by delta lines.
@@ -219,6 +228,9 @@ func (d *detailView) scroll(delta int) {
 	if d.focusRight {
 		row, col := d.right.GetScrollOffset()
 		d.right.ScrollTo(max(0, row+delta), col)
+		return
+	}
+	if d.left.GetRowCount() <= 1 {
 		return
 	}
 	row, _ := d.left.GetSelection()
