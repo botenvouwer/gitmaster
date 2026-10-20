@@ -16,9 +16,15 @@ hide repos that are archived on their remote (hidden by default).
 Home: `enter` open all repos or a project, `n` new project, `e` edit a
 project's repos, `R` rename, `d` delete, `r` rescan.
 
-Repos: `0` all, `1` unpushed commits, `2` uncommitted/untracked, `enter` open
-repo, `a` add repo to a project, `x` remove from the current project,
-`r` rescan.
+Repos: `tab` switch to the pull-request overview and back, `0` all,
+`1` unpushed commits, `2` uncommitted/untracked, `enter` open repo, `a` add
+repo to a project, `x` remove from the current project, `r` rescan.
+
+Pull-request overview: all open PRs of the repos in scope; `enter` opens the
+repo on that PR, `m` mine/all, `o` open in browser, `r` reload.
+
+The chosen view (repos or pull requests) and the repo-screen mode are
+remembered across screens and restarts.
 
 Project repos: `space`/`enter` toggle a repo, `esc` done.
 

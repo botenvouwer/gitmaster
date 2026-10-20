@@ -28,7 +28,14 @@ namespace.
   ahead/behind, staged/modified/untracked counts and a state column. Quick
   filters: all / unpushed commits / uncommitted work, plus a name filter.
   `a` adds the selected repo to a project (picker, or a new one), `x` removes
-  it from the current project.
+  it from the current project. `tab` switches to the **pull request
+  overview** of the same scope: every open PR of those repos (streamed in
+  per repo, cached on the `repoEntry`), `m` mine/all, `o` browser, `enter`
+  opens the repo's PR view on that PR.
+- **Remembered views**: the master view (repos/pulls) and the repo-screen
+  mode (open work/commits/pull requests) are stored in the global config's
+  `ui` section whenever they are switched, so new screens and the next start
+  open in the same view.
 - **Project repos editor**: checklist of every repo; space/enter toggles
   membership, saved immediately.
 - **Repo detail screen** with three view modes, each a two-pane layout
@@ -43,7 +50,7 @@ namespace.
 ## Configuration
 
 - `~/.gitmaster/config.json` (global): `settings` (`showArchived`,
-  `syntaxStyle`, `refreshSeconds`) and `environments` (directories gitmaster was opened in,
+  `syntaxStyle`, `refreshSeconds`), `ui` (last used views) and `environments` (directories gitmaster was opened in,
   most recent first). Created on first start and re-saved so new settings
   appear with their defaults.
 - `<dir>/.gitmaster/config.json` (local): `projects` — name + list of repo

@@ -23,6 +23,48 @@ type repoEntry struct {
 
 	archived bool      // archived on the remote
 	remoteAt time.Time // when the remote was last asked
+
+	// Open pull requests, loaded on demand and shared by the PR overview
+	// and the repo screen.
+	prs       []pr.PR
+	prRemote  pr.Remote
+	prErr     error
+	prLoaded  bool
+	prLoading bool
+	prGen     int // bumped on every load so views can tell what they rendered
+}
+
+// loadPRs fetches the open pull requests of repos that have none yet (or of
+// all of them with force), a few at a time, and notifies views as each
+// repo lands.
+func (a *App) loadPRs(repos []*repoEntry, force bool) {
+	e := a.env
+	gen := e.gen
+	sem := make(chan struct{}, 4)
+	for _, r := range repos {
+		if r.prLoading || (r.prLoaded && !force) {
+			continue
+		}
+		r.prLoading = true
+		go func(r *repoEntry) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			remote, err := pr.Detect(r.path)
+			var prs []pr.PR
+			if err == nil {
+				prs, err = pr.List(r.path, remote)
+			}
+			a.QueueUpdateDraw(func() {
+				r.prLoading = false
+				if gen != e.gen {
+					return
+				}
+				r.prRemote, r.prs, r.prErr, r.prLoaded = remote, prs, err, true
+				r.prGen++
+				a.notify()
+			})
+		}(r)
+	}
 }
 
 // remoteTTL is how long a remote check (archived flag) stays valid.

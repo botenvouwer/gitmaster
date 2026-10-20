@@ -48,9 +48,17 @@ type Environment struct {
 	LastOpened time.Time `json:"lastOpened"`
 }
 
+// UIState remembers which views were used last, so navigation and the next
+// start land in the same place.
+type UIState struct {
+	MasterView string `json:"masterView"` // "repos" or "pulls"
+	DetailView string `json:"detailView"` // "open work", "commits" or "pull requests"
+}
+
 // Global is the user-wide configuration.
 type Global struct {
 	Settings     Settings      `json:"settings"`
+	UI           UIState       `json:"ui"`
 	Environments []Environment `json:"environments"`
 	path         string
 }

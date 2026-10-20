@@ -31,6 +31,16 @@ func (m mode) String() string {
 	return "open work"
 }
 
+func parseMode(s string) mode {
+	switch s {
+	case "commits":
+		return modeCommits
+	case "pull requests":
+		return modePRs
+	}
+	return modeWork
+}
+
 const commitLimit = 500
 
 // detailView shows one repo with a list on the left and content on the right.
@@ -46,13 +56,11 @@ type detailView struct {
 	focusRight bool
 	showAlt    [3]bool // per mode: the alternate right-pane rendering (d toggles)
 	mineOnly   bool
+	openPR     int // select this pull request once the list is rendered
 
-	files     []git.File
-	commits   []git.Commit
-	prs       []pr.PR
-	remote    pr.Remote
-	remoteErr error
-	prsLoaded bool
+	files       []git.File
+	commits     []git.Commit
+	renderedPRs int // repo.prGen that the PR list was last rendered from
 
 	leftGen    int
 	rightGen   int
@@ -60,7 +68,7 @@ type detailView struct {
 }
 
 func newDetail(a *App, r *repoEntry) *detailView {
-	d := &detailView{Flex: tview.NewFlex(), app: a, repo: r, mineOnly: true}
+	d := &detailView{Flex: tview.NewFlex(), app: a, repo: r, mineOnly: true, mode: parseMode(a.ui().DetailView)}
 	d.showAlt[modeCommits] = false // commits: diff by default, alt = full file
 
 	d.left = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false).SetSelectedStyle(styleSelected)
@@ -82,9 +90,14 @@ func (d *detailView) crumbs() []string             { return []string{d.repo.name
 func (d *detailView) escape() bool                 { return d.filter.clear() }
 func (d *detailView) refreshTargets() []*repoEntry { return []*repoEntry{d.repo} }
 
-// update picks up a refreshed status: the header always, the file list in
-// open-work mode when it changed (keeping the selected file).
+// update picks up refreshed data: the header always, a freshly loaded PR
+// list, and in open-work mode the file list when it changed (keeping the
+// selected file).
 func (d *detailView) update() {
+	if d.mode == modePRs && d.repo.prLoaded && d.renderedPRs != d.repo.prGen {
+		d.renderPRs()
+		return
+	}
 	if d.mode != modeWork || d.repo.err != nil || sameFiles(d.files, d.repo.status.Files) {
 		return
 	}
@@ -159,7 +172,9 @@ func (d *detailView) info() [][2]string {
 func (d *detailView) start() { d.reload() }
 
 func (d *detailView) reload() {
-	d.prsLoaded = false
+	if d.mode == modePRs {
+		d.app.loadPRs([]*repoEntry{d.repo}, true)
+	}
 	go func() {
 		st, err := git.GetStatus(d.repo.path)
 		d.app.QueueUpdateDraw(func() {
@@ -179,6 +194,8 @@ func (d *detailView) setMode(m mode) {
 		return
 	}
 	d.mode = m
+	d.app.ui().DetailView = m.String()
+	d.app.saveGlobal()
 	d.filter.reset()
 	d.setFocus(false)
 	d.app.refresh()
@@ -307,27 +324,11 @@ func (d *detailView) loadLeft() {
 			})
 		}()
 	case modePRs:
-		if d.prsLoaded {
+		if d.repo.prLoaded {
 			d.renderPRs()
 			return
 		}
-		go func() {
-			remote, err := pr.Detect(d.repo.path)
-			var prs []pr.PR
-			if err == nil {
-				prs, err = pr.List(d.repo.path, remote)
-			}
-			d.app.QueueUpdateDraw(func() {
-				if gen != d.leftGen {
-					return
-				}
-				d.remote, d.remoteErr, d.prs, d.prsLoaded = remote, err, prs, true
-				if err != nil {
-					d.app.FlashErr(err)
-				}
-				d.renderPRs()
-			})
-		}()
+		d.app.loadPRs([]*repoEntry{d.repo}, false) // update() renders it
 	}
 }
 
@@ -421,10 +422,12 @@ func (d *detailView) renderCommits() {
 }
 
 func (d *detailView) renderPRs() {
+	r := d.repo
+	d.renderedPRs = r.prGen
 	d.left.Clear()
 	d.header("#", "TITLE", "AUTHOR", "HEAD → BASE", "UPDATED")
-	row := 1
-	for i, p := range d.prs {
+	row, selectRow := 1, 0
+	for i, p := range r.prs {
 		if d.mineOnly && !p.Mine {
 			continue
 		}
@@ -434,6 +437,9 @@ func (d *detailView) renderPRs() {
 		}
 		if !d.filter.match(strconv.Itoa(p.Number), title, p.Author, p.Head, p.Base) {
 			continue
+		}
+		if p.Number == d.openPR {
+			selectRow = row
 		}
 		d.left.SetCell(row, 0, tview.NewTableCell(strconv.Itoa(p.Number)).SetTextColor(colorSHA).SetReference(i))
 		d.left.SetCell(row, 1, tview.NewTableCell(tview.Escape(title)).SetTextColor(colorValue).SetExpansion(1))
@@ -446,17 +452,21 @@ func (d *detailView) renderPRs() {
 	if !d.mineOnly {
 		scope = "all"
 	}
-	where := d.remote.Provider.String()
-	if d.remote.Slug != "" {
-		where += ":" + d.remote.Slug
+	where := r.prRemote.Provider.String()
+	if r.prRemote.Slug != "" {
+		where += ":" + r.prRemote.Slug
 	}
 	empty := "no open pull requests"
-	if d.remoteErr != nil {
-		empty = "cannot list pull requests: " + d.remoteErr.Error()
-	} else if d.mineOnly && len(d.prs) > 0 && d.filter.text == "" {
-		empty = fmt.Sprintf("none of the %s are yours (press m to show all)", plural(len(d.prs), "open pull request"))
+	if r.prErr != nil {
+		empty = "cannot list pull requests: " + r.prErr.Error()
+	} else if d.mineOnly && len(r.prs) > 0 && d.filter.text == "" {
+		empty = fmt.Sprintf("none of the %s are yours (press m to show all)", plural(len(r.prs), "open pull request"))
 	}
 	d.finishLeft(fmt.Sprintf(" Pull Requests(%s)[%d] %s", scope, row-1, where), row-1, empty)
+	if selectRow > 0 {
+		d.left.Select(selectRow, 0)
+	}
+	d.openPR = 0
 }
 
 // --- right pane ------------------------------------------------------------
@@ -476,8 +486,8 @@ func (d *detailView) selectedPR() *pr.PR {
 	if d.mode != modePRs {
 		return nil
 	}
-	if i := d.selectedIndex(); i >= 0 && i < len(d.prs) {
-		return &d.prs[i]
+	if i := d.selectedIndex(); i >= 0 && i < len(d.repo.prs) {
+		return &d.repo.prs[i]
 	}
 	return nil
 }
@@ -549,13 +559,13 @@ func (d *detailView) rightJob() (string, func() (string, error)) {
 			return colorizeDiff(out, style), err
 		}
 	case modePRs:
-		if i < 0 || i >= len(d.prs) {
+		if i < 0 || i >= len(d.repo.prs) {
 			return "", nil
 		}
-		p := d.prs[i]
+		p := d.repo.prs[i]
 		if alt {
 			return fmt.Sprintf(" #%d [diff] ", p.Number), func() (string, error) {
-				out, err := git.PRDiff(d.repo.path, d.remote.Name, p.Number, p.Base)
+				out, err := git.PRDiff(d.repo.path, d.repo.prRemote.Name, p.Number, p.Base)
 				return colorizeDiff(out, style), err
 			}
 		}

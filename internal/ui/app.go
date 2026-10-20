@@ -224,6 +224,23 @@ func (a *App) refresh() {
 	a.crumbTV.SetText(cb.String())
 }
 
+// ui returns the remembered view state (a throwaway when no config loaded).
+func (a *App) ui() *config.UIState {
+	if a.global == nil {
+		return &config.UIState{}
+	}
+	return &a.global.UI
+}
+
+func (a *App) saveGlobal() {
+	if a.global == nil {
+		return
+	}
+	if err := a.global.Save(); err != nil {
+		a.FlashErr(err)
+	}
+}
+
 // Flash shows a transient message in the flash line.
 func (a *App) Flash(msg string) { a.flash("[aqua]" + tview.Escape(msg)) }
 
