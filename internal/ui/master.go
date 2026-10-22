@@ -128,6 +128,8 @@ func (m *masterView) update()                      { m.rebuild() }
 func (m *masterView) escape() bool                 { return m.clear() }
 func (m *masterView) refreshTargets() []*repoEntry { return m.repos() }
 
+func (m *masterView) wantsPRs() bool { return m.view != viewRepos }
+
 func (m *masterView) start() {
 	m.rebuild()
 	m.loadView(false)
@@ -683,22 +685,31 @@ func (m *masterView) rebuildLive() {
 		if r.loaded && r.err == nil && r.status.Dirty() {
 			work = append(work, liveRef{kind: liveWork, repo: r, key: "work"})
 		}
-		heads := map[string]bool{}
+		// A pushed commit belongs to a PR when its branch is the head of an
+		// open PR, or of a PR that closed after the commit was made. Work
+		// pushed to a branch after its PR closed is new work again.
+		openHeads := map[string]bool{}
+		closedAt := map[string]time.Time{}
 		for _, p := range r.prs {
-			heads[p.Head] = true
+			openHeads[p.Head] = true
 			if p.Mine && !p.Updated.Before(since) {
 				open = append(open, liveRef{kind: liveOpenPR, repo: r, key: strconv.Itoa(p.Number), pr: p})
 			}
 		}
 		for _, p := range r.closedPRs {
-			heads[p.Head] = true
+			if p.Closed.After(closedAt[p.Head]) {
+				closedAt[p.Head] = p.Closed
+			}
 			if !p.Closed.Before(since) {
 				closed = append(closed, liveRef{kind: liveClosedPR, repo: r, key: strconv.Itoa(p.Number), pr: p})
 			}
 		}
 		for _, c := range r.myCommits {
-			if c.When.Before(since) || heads[c.Branch] || c.OnBase {
+			if c.When.Before(since) || c.OnBase {
 				continue
+			}
+			if !c.Unpushed && (!r.prLoaded || openHeads[c.Branch] || !c.When.After(closedAt[c.Branch])) {
+				continue // in a PR, or not known yet: never flash it as "not in a PR"
 			}
 			ref := liveRef{kind: liveCommit, repo: r, key: c.SHA, commit: c}
 			if c.Unpushed {

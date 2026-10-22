@@ -52,14 +52,30 @@ namespace.
 - **Live status** (`tab` on the repos screen, or `L` on Home):
   the user's work in the chosen window, in four sections: open work per
   repo, local commits (not pushed), pushed commits not in a pull request
-  (both: the user's non-merge commits on any local branch whose branch is
-  not a PR head and that no remote base branch contains yet), own open PRs
+  (the user's non-merge commits on any local branch that no remote base
+  branch contains yet; unpushed ones always show, pushed ones are left out
+  when their branch is the head of an open PR, or of a PR that closed after
+  the commit was made), own open PRs
   updated in the window, own
   PRs closed in the window (`enter` opens the browser for those). Windows
   come from `settings.liveWindowsHours` (default 12, 24, 72), picked with
   the number keys and remembered in `ui.liveHours`. Data: `git.MyCommits`,
   `pr.ListClosed` and the shared PR cache, loaded by `App.loadLive`; the
-  periodic refresh re-reads the commits too.
+  periodic refresh re-reads the commits too. **PRs are polled by interest**
+  (`App.refreshPRs`, only while a view shows PRs): a repo where a PR may
+  appear or change (the user has an open one, or pushed a commit under 10 min
+  ago that is in none: `repoEntry.watching`) every 2 s, other repos every
+  10 s, doubling per failed read up to 1 min. A change in a repo's git status
+  (commit, push) re-reads its PRs on the next tick (`prDirty`) — gitmaster
+  derives its signal from the local status poll instead of git hooks (git has
+  no post-push hook, `gh`/`tea` have none for PRs made in the web UI).
+  Closed PRs never change, so they are read when the window grows, when an
+  open PR vanishes from the open list, and every 5 min as a safety net.
+  Open PRs, commits and closed PRs land in one update (`App.liveLoad`) and a
+  failed read keeps the old data. PRs are cached in `.gitmaster/cache.json`
+  (`RepoCache.OpenPRs/ClosedPRs`) and shown on the first frame, then
+  revalidated; pushed commits stay hidden until a repo's PR state is known,
+  so nothing flashes under "not in a pull request".
 - **Remembered views**: the master view (repos/pulls/live), the repo-screen
   mode (open work/commits/pull requests), the layout and the PR mine/all
   filter (one setting shared by the overview and the repo's PR view) are

@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/botenvouwer/gitmaster/internal/pr"
 )
 
 // DirName is the name of both the global (~/.gitmaster) and local (.gitmaster) dirs.
@@ -264,6 +266,15 @@ type RepoCache struct {
 	// Remote facts, refreshed when RemoteCheckedAt is older than a day.
 	Archived        bool      `json:"archived"`
 	RemoteCheckedAt time.Time `json:"remoteCheckedAt"`
+	// Pull requests as last read, so the live screen is right from its first
+	// frame and revalidates in the background. Closed PRs never change, so
+	// they are only re-read when the window grows or an open one vanishes.
+	PRsLoaded   bool      `json:"prsLoaded"`
+	PRRemote    pr.Remote `json:"prRemote"`
+	OpenPRs     []pr.PR   `json:"openPRs,omitempty"`
+	ClosedPRs   []pr.PR   `json:"closedPRs,omitempty"`
+	ClosedSince time.Time `json:"closedSince"`
+	ClosedAt    time.Time `json:"closedAt"`
 }
 
 // Cache holds the result of the last scan so the UI can show it instantly.

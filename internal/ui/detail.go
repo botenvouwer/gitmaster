@@ -128,8 +128,10 @@ type detailView struct {
 
 	workFiles   []git.File
 	commits     []git.Commit
-	commitsHead string // headKey of the status the commit list was loaded for
-	renderedPRs int    // repo.prGen that the PR list was last rendered from
+	commitsHead string            // headKey of the status the commit list was loaded for
+	renderedPRs int               // repo.prGen that the PR list was last rendered from
+	shownPR     []int             // PR number per reference index of the rendered PR list
+	prRefAt     map[int]time.Time // PR update time the cached refs were fetched at
 
 	cur        *change
 	curFiles   []git.ChangedFile
@@ -242,6 +244,7 @@ func (d *detailView) crumbs() []string {
 
 func (d *detailView) escape() bool                 { return d.filter.clear() }
 func (d *detailView) refreshTargets() []*repoEntry { return []*repoEntry{d.repo} }
+func (d *detailView) wantsPRs() bool               { return d.mode == modePRs }
 func (d *detailView) focusTarget() tview.Primitive { return d.prim(d.focus) }
 
 // stop drops the pull-request refs fetched while browsing.
@@ -941,6 +944,15 @@ func (d *detailView) renderCommits() {
 func (d *detailView) renderPRs() {
 	r := d.repo
 	d.renderedPRs = r.prGen
+	if d.openPR == 0 { // a live refresh: keep the PR the cursor is on
+		if i := d.selectedIndex(d.list); i >= 0 && i < len(d.shownPR) {
+			d.openPR = d.shownPR[i]
+		}
+	}
+	d.shownPR = d.shownPR[:0]
+	for _, p := range r.prs {
+		d.shownPR = append(d.shownPR, p.Number)
+	}
 	d.list.Clear()
 	header(d.list, "#", "TITLE", "AUTHOR", "HEAD → BASE", "UPDATED")
 	row, selectRow := 1, 0
@@ -1099,18 +1111,22 @@ func (d *detailView) prChange(p pr.PR) *change {
 	refs := func() (string, string, error) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		if r, ok := d.prRefs[p.Number]; ok {
+		if r, ok := d.prRefs[p.Number]; ok && d.prRefAt[p.Number].Equal(p.Updated) {
 			return r[0], r[1], nil
 		}
 		base, head, err := git.FetchPR(dir, remote.Name, p.Number, p.Base)
 		if err == nil {
 			d.prRefs[p.Number] = [2]string{base, head}
+			if d.prRefAt == nil {
+				d.prRefAt = map[int]time.Time{}
+			}
+			d.prRefAt[p.Number] = p.Updated // a PR with new commits is fetched again
 		}
 		return base, head, err
 	}
 	details := func() (string, error) { return prDetails(p), nil }
 	return &change{
-		key: fmt.Sprintf("pr-%d", p.Number), label: fmt.Sprintf("#%d", p.Number),
+		key: fmt.Sprintf("pr-%d-%d", p.Number, p.Updated.Unix()), label: fmt.Sprintf("#%d", p.Number),
 		files: func() ([]git.ChangedFile, error) {
 			base, head, err := refs()
 			if err != nil {

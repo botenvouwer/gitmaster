@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/botenvouwer/gitmaster/internal/config"
@@ -32,7 +33,10 @@ type repoEntry struct {
 	prErr     error
 	prLoaded  bool
 	prLoading bool
-	prGen     int // bumped on every load so views can tell what they rendered
+	prAt      time.Time // when the PRs were last read from the remote this session
+	prDirty   bool      // git state moved: re-read the PRs on the next tick
+	prFails   int       // consecutive failed reads, for backoff
+	prGen     int       // bumped on every load so views can tell what they rendered
 
 	// Live status: the user's recent commits and closed PRs.
 	myCommits    []git.Commit
@@ -40,62 +44,173 @@ type repoEntry struct {
 	commitsAt    time.Time // when myCommits was last read
 	closedPRs    []pr.PR
 	closedSince  time.Time
+	closedAt     time.Time // when the closed PRs were last read
 	closedErr    error
 	liveLoading  bool
 }
 
 // loadLive fetches, for the live status screen, each repo's open PRs, the
 // user's commits since the window start and the user's PRs closed since then.
+// Repos whose data is already fresh this session are skipped, unless force.
 func (a *App) loadLive(repos []*repoEntry, since time.Time, force bool) {
-	a.loadPRs(repos, force)
+	a.liveLoad(repos, since, !force, force)
+}
+
+// pollLive re-reads the open PRs and commits of repos on screen. The closed
+// PRs are only read again when they can have changed (see liveLoad).
+func (a *App) pollLive(repos []*repoEntry, since time.Time) {
+	a.liveLoad(repos, since, false, false)
+}
+
+// liveLoad reads open PRs, commits and, when needed, closed PRs of each repo
+// in parallel and lands them in one update, so a PR that just closed is never
+// in neither list (its commits would flash up as "pushed, not in a pull
+// request"). A closed PR stays closed, so that list is only read when the
+// window grew, an open PR vanished (it was closed or merged), now and then as
+// a safety net, or on force.
+func (a *App) liveLoad(repos []*repoEntry, since time.Time, onlyMissing, forceClosed bool) {
 	e := a.env
 	gen := e.gen
-	sem := make(chan struct{}, 4)
 	for _, r := range repos {
-		if r.liveLoading || (!force && !r.closedSince.IsZero() && !r.closedSince.After(since) && !r.commitsSince.After(since)) {
+		covered := !r.prAt.IsZero() && !r.closedSince.IsZero() && !r.closedSince.After(since) && !r.commitsSince.After(since)
+		if r.liveLoading || (onlyMissing && covered) {
 			continue
 		}
-		r.liveLoading = true
+		r.liveLoading, r.prDirty = true, false
+		started := time.Now()
+		remote0, prev := r.prRemote, openNumbers(r.prs)
+		needClosed := forceClosed || r.closedSince.IsZero() || r.closedSince.After(since) || time.Since(r.closedAt) >= closedEvery
 		go func(r *repoEntry) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			commits, cerr := git.MyCommits(r.path, since)
-			remote, err := pr.Detect(r.path)
-			var closed []pr.PR
-			if err == nil {
-				closed, err = pr.ListClosed(r.path, remote, since)
+			liveSem <- struct{}{}
+			defer func() { <-liveSem }()
+			var (
+				wg                sync.WaitGroup
+				commits, closed   = []git.Commit(nil), []pr.PR(nil)
+				open              []pr.PR
+				cerr, oerr, clerr error
+				remote            = remote0
+				closedRead        bool
+			)
+			readClosed := func() {
+				closedRead = true
+				closed, clerr = pr.ListClosed(r.path, remote, since)
 			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				commits, cerr = git.MyCommits(r.path, since)
+			}()
+			if remote.Provider == pr.None {
+				remote, oerr = pr.Detect(r.path)
+			}
+			if oerr == nil {
+				if needClosed {
+					wg.Add(1)
+					go func() { defer wg.Done(); readClosed() }()
+				}
+				open, oerr = pr.List(r.path, remote)
+				if oerr == nil && !needClosed && vanished(prev, open) {
+					readClosed()
+				}
+			}
+			wg.Wait()
 			a.QueueUpdateDraw(func() {
 				r.liveLoading = false
 				if gen != e.gen {
 					return
 				}
+				changed := a.applyOpenPRs(r, remote, open, oerr, started)
 				if cerr == nil {
+					changed = changed || commitsKey(commits) != commitsKey(r.myCommits)
 					r.myCommits, r.commitsSince, r.commitsAt = commits, since, time.Now()
 				}
-				r.closedPRs, r.closedErr, r.closedSince = closed, err, since
-				a.markDirty()
+				if closedRead {
+					changed = changed || errText(clerr) != errText(r.closedErr)
+					r.closedErr = clerr
+					if clerr == nil {
+						changed = changed || r.closedSince != since || prsKey(closed) != prsKey(r.closedPRs)
+						r.closedPRs, r.closedSince, r.closedAt = closed, since, time.Now()
+						e.cacheDirty = true
+					} else {
+						r.prFails++
+					}
+				}
+				if changed {
+					a.markDirty()
+				}
 			})
 		}(r)
 	}
 }
 
-// loadPRs fetches the open pull requests of repos that have none yet (or of
-// all of them with force), a few at a time, and notifies views as each
-// repo lands.
+func openNumbers(prs []pr.PR) map[int]bool {
+	m := make(map[int]bool, len(prs))
+	for _, p := range prs {
+		m[p.Number] = true
+	}
+	return m
+}
+
+// vanished reports whether a PR of before is missing from now: it was
+// closed or merged, so the closed list must be read again.
+func vanished(before map[int]bool, now []pr.PR) bool {
+	if len(before) == 0 {
+		return false
+	}
+	still := openNumbers(now)
+	for n := range before {
+		if !still[n] {
+			return true
+		}
+	}
+	return false
+}
+
+// applyOpenPRs stores a fresh open-PR read on r (UI goroutine) and reports
+// whether anything the tables show changed; views notice through prGen. A
+// failed read keeps what is known, so one hiccup never blanks the tables. at
+// is when the read started: the poll interval counts from there.
+func (a *App) applyOpenPRs(r *repoEntry, remote pr.Remote, prs []pr.PR, err error, at time.Time) bool {
+	changed := !r.prLoaded || errText(err) != errText(r.prErr)
+	if remote.Provider != pr.None {
+		r.prRemote = remote
+	}
+	if err != nil {
+		r.prFails++
+	} else {
+		r.prFails = 0
+		changed = changed || prsKey(prs) != prsKey(r.prs)
+		r.prs = prs
+	}
+	r.prErr, r.prLoaded, r.prAt = err, true, at
+	if changed {
+		r.prGen++
+		a.env.cacheDirty = true
+	}
+	return changed
+}
+
+// loadPRs fetches the open pull requests of repos not read yet this session
+// (or of all of them with force), a few at a time, and notifies views as each
+// repo lands. PRs restored from the cache count as unread: they show at once
+// and are revalidated.
 func (a *App) loadPRs(repos []*repoEntry, force bool) {
 	e := a.env
 	gen := e.gen
-	sem := make(chan struct{}, 4)
 	for _, r := range repos {
-		if r.prLoading || (r.prLoaded && !force) {
+		if r.prLoading || (!r.prAt.IsZero() && !force) {
 			continue
 		}
-		r.prLoading = true
+		r.prLoading, r.prDirty = true, false
+		started := time.Now()
+		remote0 := r.prRemote
 		go func(r *repoEntry) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			remote, err := pr.Detect(r.path)
+			liveSem <- struct{}{}
+			defer func() { <-liveSem }()
+			remote, err := remote0, error(nil)
+			if remote.Provider == pr.None {
+				remote, err = pr.Detect(r.path)
+			}
 			var prs []pr.PR
 			if err == nil {
 				prs, err = pr.List(r.path, remote)
@@ -105,12 +220,52 @@ func (a *App) loadPRs(repos []*repoEntry, force bool) {
 				if gen != e.gen {
 					return
 				}
-				r.prRemote, r.prs, r.prErr, r.prLoaded = remote, prs, err, true
-				r.prGen++
-				a.markDirty()
+				if a.applyOpenPRs(r, remote, prs, err, started) {
+					a.markDirty()
+				}
 			})
 		}(r)
 	}
+}
+
+// watching reports whether a PR of r may appear or change any moment: the
+// user has an open one, or pushed a commit a few minutes ago that is in none.
+func (r *repoEntry) watching() bool {
+	open := map[string]bool{}
+	for _, p := range r.prs {
+		if p.Mine {
+			return true
+		}
+		open[p.Head] = true
+	}
+	for _, c := range r.myCommits {
+		if !c.Unpushed && !c.OnBase && !open[c.Branch] && time.Since(c.When) < prHotWindow {
+			return true
+		}
+	}
+	return false
+}
+
+// prInterval is how long r's PRs may go unread: short where something is
+// going on, long elsewhere, and doubling with every failed read.
+func (r *repoEntry) prInterval() time.Duration {
+	d := prIdleEvery
+	if r.watching() {
+		d = prWatchEvery
+	}
+	for i := 0; i < r.prFails && d < prMaxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, prMaxBackoff)
+}
+
+// prsKey captures what the PR tables show, for change detection.
+func prsKey(prs []pr.PR) string {
+	var b strings.Builder
+	for _, p := range prs {
+		fmt.Fprintf(&b, "%d|%s|%s|%s|%t|%d;", p.Number, p.Title, p.Head, p.State, p.Draft, p.Updated.Unix())
+	}
+	return b.String()
 }
 
 // remoteTTL is how long a remote check (archived flag) stays valid.
@@ -126,6 +281,8 @@ type environment struct {
 	gen           int
 	pending       int
 	remotePending int
+	cacheDirty    bool // PR data changed since the cache was written
+	cacheSaved    time.Time
 }
 
 func (e *environment) repo(name string) *repoEntry {
@@ -234,6 +391,10 @@ func (a *App) scan(force bool) {
 		if c, ok := e.cache.Repos[r.name]; ok {
 			r.status, r.cached = fromCache(c), true
 			r.archived, r.remoteAt = c.Archived, c.RemoteCheckedAt
+			if c.PRsLoaded {
+				r.prRemote, r.prs, r.prLoaded = c.PRRemote, c.OpenPRs, true
+				r.closedPRs, r.closedSince, r.closedAt = c.ClosedPRs, c.ClosedSince, c.ClosedAt
+			}
 		}
 		e.repos = append(e.repos, r)
 	}
@@ -300,17 +461,32 @@ func (a *App) saveCache() {
 		return
 	}
 	e.cache.ScannedAt = time.Now()
+	e.cacheDirty, e.cacheSaved = false, time.Now()
 	e.cache.Repos = map[string]config.RepoCache{}
 	for _, r := range e.repos {
 		if (r.loaded && r.err == nil) || (!r.loaded && r.cached) {
 			c := toCache(r.status)
 			c.Archived, c.RemoteCheckedAt = r.archived, r.remoteAt
+			if r.prLoaded && r.prErr == nil {
+				c.PRsLoaded, c.PRRemote, c.OpenPRs = true, r.prRemote, r.prs
+				c.ClosedPRs, c.ClosedSince, c.ClosedAt = withoutBodies(r.closedPRs), r.closedSince, r.closedAt
+			}
 			e.cache.Repos[r.name] = c
 		}
 	}
 	if err := e.cache.Save(); err != nil {
 		a.FlashErr(err)
 	}
+}
+
+// withoutBodies drops the descriptions of closed PRs: they are only listed.
+func withoutBodies(prs []pr.PR) []pr.PR {
+	out := make([]pr.PR, len(prs))
+	for i, p := range prs {
+		p.Body = ""
+		out[i] = p
+	}
+	return out
 }
 
 func (a *App) saveLocal() {
@@ -407,7 +583,55 @@ const (
 	// renderEvery is the longest the tables go without a re-render, so the
 	// age columns keep moving.
 	renderEvery = 30 * time.Second
+	// Pull requests are polled by interest, not evenly. Where one may appear
+	// or change any moment (see repoEntry.watching) every prWatchEvery; other
+	// repos on screen every prIdleEvery; a failing remote backs off up to
+	// prMaxBackoff. A commit or push seen in the git status re-reads at once.
+	prWatchEvery = 2 * time.Second
+	prIdleEvery  = 10 * time.Second
+	prMaxBackoff = time.Minute
+	// prHotWindow is how long a pushed commit keeps its repo "watched" while
+	// no PR contains it.
+	prHotWindow = 10 * time.Minute
+	// closedEvery is the safety-net interval for re-reading closed PRs, which
+	// are otherwise only read when the window grows or an open PR vanishes.
+	closedEvery = 5 * time.Minute
+	// cacheEvery is the longest PR changes wait before the cache is written.
+	cacheEvery = 5 * time.Second
 )
+
+// liveSem bounds the number of PR / commit reads at once.
+var liveSem = make(chan struct{}, 8)
+
+// prWatcher is implemented by views that show pull requests: while it wants
+// them, the PRs of its repos are re-read as often as prInterval says.
+type prWatcher interface {
+	wantsPRs() bool
+	refreshTargets() []*repoEntry
+}
+
+// refreshPRs re-reads the PRs of repos on screen that are due: their
+// interval passed, or git state moved since the last read.
+func (a *App) refreshPRs() {
+	v, ok := a.top().(prWatcher)
+	if !ok || !v.wantsPRs() {
+		return
+	}
+	var due []*repoEntry
+	for _, r := range v.refreshTargets() {
+		if !r.prLoading && !r.liveLoading && (r.prDirty || time.Since(r.prAt)+a.refreshEvery/2 >= r.prInterval()) { // half a tick of slack: ticks are the clock
+			due = append(due, r)
+		}
+	}
+	if len(due) == 0 {
+		return
+	}
+	if lv, ok := a.top().(liveRefresher); ok {
+		a.pollLive(due, lv.liveSince())
+		return
+	}
+	a.loadPRs(due, true)
+}
 
 // startAutoRefresh ticks every refreshEvery on the UI goroutine.
 func (a *App) startAutoRefresh() {
@@ -426,6 +650,10 @@ func (a *App) startAutoRefresh() {
 // things, and re-renders now and then so ages advance.
 func (a *App) refreshTick() {
 	a.refreshStatuses()
+	a.refreshPRs()
+	if e := a.env; e.cacheDirty && time.Since(e.cacheSaved) >= cacheEvery {
+		a.saveCache()
+	}
 	if t, ok := a.top().(ticker); ok {
 		t.tick()
 	}
@@ -486,6 +714,9 @@ func (a *App) fetchStatus(r *repoEntry, since time.Time, done func()) {
 			changed := !r.loaded || errText(err) != errText(r.err)
 			if err == nil {
 				changed = changed || statusKey(st) != statusKey(r.status)
+				if prevKey != "" && statusKey(st) != prevKey {
+					r.prDirty = true // a commit or push: a PR may follow
+				}
 				r.status = st
 			}
 			r.err, r.loaded = err, true
