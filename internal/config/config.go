@@ -39,6 +39,15 @@ type Settings struct {
 	// LiveWindowsHours are the time windows the live status screen can show,
 	// chosen with the number keys 1, 2, 3, ... in that order.
 	LiveWindowsHours []int `json:"liveWindowsHours"`
+	// AutoUpdate makes gitmaster check for a newer release when it starts
+	// (at most once an hour) and install it before opening. Off by default;
+	// `gitmaster update --auto on` turns it on.
+	AutoUpdate bool `json:"autoUpdate"`
+}
+
+// UpdateState remembers when the last update check ran.
+type UpdateState struct {
+	LastCheck time.Time `json:"lastCheck"`
 }
 
 // Defaults for settings that are missing from the file.
@@ -81,6 +90,7 @@ func (u *UIState) SetMineOnly(mine bool) {
 type Global struct {
 	Settings     Settings      `json:"settings"`
 	UI           UIState       `json:"ui"`
+	Update       UpdateState   `json:"update"`
 	Environments []Environment `json:"environments"`
 	path         string
 }

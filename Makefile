@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  = -s -w -X main.version=$(VERSION)
 PLATFORMS = darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 
-.PHONY: build install run test vet check build-all
+.PHONY: build install run test vet check build-all release
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o gitmaster .
@@ -33,3 +33,8 @@ build-all:
 		GOOS=$${p%/*} GOARCH=$${p#*/} go build -ldflags "$(LDFLAGS)" -o dist/gitmaster-$${p%/*}-$${p#*/} . || exit 1; \
 		echo "built dist/gitmaster-$${p%/*}-$${p#*/}"; \
 	done
+
+# release builds dist/ and dist/checksums.txt, the files `gitmaster update`
+# downloads. The release workflow runs it for every v* tag.
+release: build-all
+	@cd dist && shasum -a 256 gitmaster-* > checksums.txt && cat checksums.txt

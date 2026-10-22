@@ -71,6 +71,30 @@ browser uses `open` on macOS and `xdg-open` on Linux (`$BROWSER` overrides
 both). Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on
 Linux, falling back to the terminal's OSC 52 clipboard.
 
+## Updating
+
+Releases are published on GitHub with binaries for macOS and Linux
+(amd64/arm64). Download `gitmaster-<os>-<arch>` from the
+[latest release](https://github.com/botenvouwer/gitmaster/releases/latest),
+make it executable and put it on your `PATH`, then keep it current with:
+
+```
+gitmaster update               # install the latest release
+gitmaster update --check       # only say whether there is one
+gitmaster update --auto on     # check at every start (at most hourly) and update; off by default
+gitmaster update --auto off
+```
+
+The download is verified against the release's `checksums.txt` before the
+binary is replaced, and a failed update leaves the old binary alone. With
+auto update on, gitmaster updates before opening and restarts itself into the
+new version; being offline never blocks the start. Builds from source
+(`make install`) are development builds and never update themselves. Windows
+is not supported for updating.
+
+Maintainers publish a release by pushing a tag: `git tag v0.2.0 && git push
+origin v0.2.0` (the `release` workflow builds and attaches the files).
+
 ## License
 
 [MIT](LICENSE): use it, change it, share it.

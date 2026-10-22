@@ -164,6 +164,20 @@ internal/ui        tview UI: app.go (shell/nav/help), env.go (repo scan + remote
   (`git.FetchPR`), removed by `git.CleanPRRefs` when the repo screen closes
   and on its next open; `refs/pull/<n>/head` exists on both GitHub and Gitea.
 
+## Updates
+
+`gitmaster update [--check] [--auto on|off]` and the start-up check live in
+`update.go` (main) and `internal/update` (GitHub release lookup, SHA-256
+verified download, atomic replace, `Restart` via exec on unix).
+`settings.autoUpdate` (off by default) makes start check at most hourly
+(`update.lastCheck` in the global config, 3 s timeout, never blocks start),
+install and re-exec with `GITMASTER_NO_UPDATE=1` so it cannot loop. Only
+release versions (`vX.Y.Z`) update: `make install` builds
+(`v0.1.0-3-gabc-dirty`) and `go run` never do. A `v*` tag push runs
+`.github/workflows/release.yml` (`make release`: `dist/gitmaster-<os>-<arch>`
++ `checksums.txt`; the asset names are what `update.AssetName` expects).
+`GITMASTER_UPDATE_API` points the lookup at another server (used in tests).
+
 ## Build / install
 
 ```

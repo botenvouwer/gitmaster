@@ -14,8 +14,8 @@ func TestTeaArchived(t *testing.T) {
 
 func TestParseRemote(t *testing.T) {
 	cases := map[string][2]string{
-		"https://github.com/acme/scanner.git":             {"github.com", "acme/scanner"},
-		"git@github.com:acme/tool.git":                               {"github.com", "acme/tool"},
+		"https://github.com/acme/scanner.git":                {"github.com", "acme/scanner"},
+		"git@github.com:acme/tool.git":                       {"github.com", "acme/tool"},
 		"ssh://git@git-ssh.example.com:443/acme/project.git": {"git-ssh.example.com", "acme/project"},
 	}
 	for raw, want := range cases {
