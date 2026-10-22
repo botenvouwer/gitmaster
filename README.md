@@ -70,3 +70,7 @@ Runs on macOS and Linux. Requires `git`; the pull-request view uses `gh`
 browser uses `open` on macOS and `xdg-open` on Linux (`$BROWSER` overrides
 both). Copying uses `pbcopy` on macOS and `wl-copy`, `xclip` or `xsel` on
 Linux, falling back to the terminal's OSC 52 clipboard.
+
+## License
+
+[MIT](LICENSE): use it, change it, share it.
