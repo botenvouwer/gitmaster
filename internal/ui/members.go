@@ -24,6 +24,7 @@ func newMembers(a *App, project string) *membersView {
 	table.SetSelectedFunc(func(row, _ int) { v.toggle() })
 	table.SetInputCapture(v.keys)
 	v.filterBox = newFilterBox(a, table, v.rebuild)
+	v.activate = v.toggle
 	return v
 }
 

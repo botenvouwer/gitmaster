@@ -47,7 +47,9 @@ focused and the file once the files pane is).
 
 Everywhere: `c` copies the selected item (commit hash, file or repo path,
 PR url), `↑`/`↓` one line, `shift+↑/↓` or `J`/`K` five lines, mouse wheel
-scrolls, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
+scrolls (a horizontal wheel scrolls the content sideways), clicking a row
+works like `enter`, `enter` on the content pane shows it full view (`esc`
+leaves; `←`/`→` then scroll sideways), `w` toggles line wrapping, `?` help, `esc` back, `q` back/quit, `ctrl-c` quit.
 
 ## Files
 

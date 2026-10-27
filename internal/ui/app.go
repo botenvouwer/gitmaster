@@ -363,7 +363,9 @@ func (a *App) toggleHelp() {
 		{"g/G", "top / bottom"},
 		{"h/l", "scroll horizontally (content pane)"},
 		{"w", "wrap long lines (content pane)"},
-		{"mouse wheel", "scroll"},
+		{"mouse wheel", "scroll (horizontal wheel too)"},
+		{"click", "select and open, like enter"},
+		{"enter (content)", "full view; esc leaves"},
 	})
 	write("General", []hotkey{
 		{"c", "copy: commit hash, file/repo path or PR url"},

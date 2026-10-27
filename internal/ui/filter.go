@@ -18,11 +18,16 @@ type filterBox struct {
 	text     string
 	quiet    bool
 	onChange func()
+	activate func() // Enter action, also run when a row is clicked
 }
 
 func newFilterBox(a *App, table *tview.Table, onChange func()) *filterBox {
 	f := &filterBox{Flex: tview.NewFlex().SetDirection(tview.FlexRow), app: a, table: table, onChange: onChange}
-	selectOnScroll(table)
+	selectOnScroll(table, func() {
+		if f.activate != nil {
+			f.activate()
+		}
+	})
 	f.input = tview.NewInputField().SetLabel(" /> ").SetLabelColor(colorKey).
 		SetFieldBackgroundColor(tcell.ColorBlack).SetFieldTextColor(colorValue)
 	f.input.SetChangedFunc(func(text string) {

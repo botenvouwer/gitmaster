@@ -118,6 +118,7 @@ type detailView struct {
 	files   *tview.Table
 	content *tview.TextView
 	wrap    bool // soft-wrap long lines in the content pane
+	zoom    bool // content pane fills the view (Enter on it, Esc leaves)
 
 	order    []pane
 	focus    pane
@@ -190,6 +191,7 @@ func (d *detailView) build() {
 	d.list.SetInputCapture(d.keys)
 	d.list.SetFocusFunc(func() { d.onFocus(paneList) })
 	d.filter = newFilterBox(d.app, d.list, d.renderLeft)
+	d.filter.activate = d.enter
 
 	d.files = tview.NewTable().SetFixed(1, 0).SetSelectable(true, false)
 	d.files.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
@@ -199,13 +201,14 @@ func (d *detailView) build() {
 		}
 	})
 	d.files.SetInputCapture(d.keys)
-	selectOnScroll(d.files)
+	selectOnScroll(d.files, nil)
 	d.files.SetFocusFunc(func() { d.onFocus(paneFiles) })
 
 	d.wrap = true
 	d.content = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true).SetWordWrap(false)
 	d.content.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
 	d.content.SetInputCapture(d.keys)
+	d.content.SetMouseCapture(d.contentMouse)
 	d.content.SetFocusFunc(func() { d.onFocus(paneContent) })
 
 	d.buildLayout()
@@ -217,8 +220,18 @@ func (d *detailView) threePane() bool {
 }
 
 func (d *detailView) buildLayout() {
+	d.layoutItems()
+	d.focus = paneList
+	d.msgMode = true
+	d.paintFocus()
+}
+
+func (d *detailView) layoutItems() {
 	d.Clear()
 	switch {
+	case d.zoom:
+		d.AddItem(d.content, 0, 1, true)
+		d.order = []pane{paneContent}
 	case !d.threePane():
 		d.AddItem(d.filter, 0, 2, true).AddItem(d.content, 0, 3, false)
 		d.order = []pane{paneList, paneContent}
@@ -229,9 +242,6 @@ func (d *detailView) buildLayout() {
 		d.AddItem(d.filter, 0, 7, true).AddItem(d.content, 0, 26, false).AddItem(d.files, 0, 7, false)
 		d.order = []pane{paneList, paneContent, paneFiles}
 	}
-	d.focus = paneList
-	d.msgMode = true
-	d.paintFocus()
 }
 
 func (d *detailView) crumbs() []string {
@@ -244,7 +254,13 @@ func (d *detailView) crumbs() []string {
 	return []string{d.repo.name, d.mode.String()}
 }
 
-func (d *detailView) escape() bool                 { return d.filter.clear() }
+func (d *detailView) escape() bool {
+	if d.zoom {
+		d.setZoom(false)
+		return true
+	}
+	return d.filter.clear()
+}
 func (d *detailView) refreshTargets() []*repoEntry { return []*repoEntry{d.repo} }
 func (d *detailView) wantsPRs() bool               { return d.mode == modePRs }
 func (d *detailView) focusTarget() tview.Primitive { return d.prim(d.focus) }
@@ -267,6 +283,9 @@ func (d *detailView) prim(p pane) tview.Primitive {
 }
 
 func (d *detailView) hotkeys() []hotkey {
+	if d.focus == paneContent {
+		return d.contentHotkeys()
+	}
 	if d.mode == modeChange {
 		return []hotkey{
 			{"d", "diff / full file"},
@@ -308,6 +327,31 @@ func (d *detailView) hotkeys() []hotkey {
 	case modePRs:
 		keys = append(keys, hotkey{"enter", "commits of PR"}, hotkey{"f", "files of PR"}, hotkey{"d", "details / diff"},
 			hotkey{"v", "layout"}, hotkey{"m", "mine / all"}, hotkey{"o", "open in browser"})
+	}
+	return keys
+}
+
+// contentHotkeys are shown while the content pane has focus.
+func (d *detailView) contentHotkeys() []hotkey {
+	keys := []hotkey{}
+	if d.zoom {
+		keys = append(keys, hotkey{"esc", "leave full view"}, hotkey{"←/→", "scroll sideways"})
+	} else {
+		keys = append(keys, hotkey{"enter", "full view"}, hotkey{"←/→", "switch pane"})
+	}
+	keys = append(keys,
+		hotkey{"↑/↓ j/k", "scroll line"},
+		hotkey{"J/K pgup/dn", "scroll 5 / page"},
+		hotkey{"g/G", "top / bottom"},
+		hotkey{"h/l", "scroll sideways"},
+		hotkey{"w", "wrap long lines"},
+		hotkey{"wheel", "scroll (also sideways)"},
+		hotkey{"d", "diff / full file"},
+		hotkey{"c", "copy"},
+		hotkey{"o", "open in browser"},
+	)
+	if !d.zoom {
+		keys = append(keys, hotkey{"esc", "back"})
 	}
 	return keys
 }
@@ -500,8 +544,12 @@ func (d *detailView) setFocus(p pane) { d.app.SetFocus(d.prim(p)) }
 // content-first layout the list shows the change's message and the files
 // pane shows a file; the content pane keeps whatever was shown last.
 func (d *detailView) onFocus(p pane) {
+	changed := d.focus != p
 	d.focus = p
 	d.paintFocus()
+	if changed {
+		d.app.refresh()
+	}
 	if p == paneContent {
 		return
 	}
@@ -552,12 +600,68 @@ func (d *detailView) moveFocus(delta int, wrap bool) {
 
 // --- keys ------------------------------------------------------------------
 
+// enter is the Enter action of the focused pane, also run by a click on a
+// list row: open the entry, or give the content pane the whole view.
+func (d *detailView) enter() {
+	switch {
+	case d.focus == paneContent:
+		d.setZoom(true)
+	case d.focus == paneList && d.mode == modePRs:
+		d.openPRCommits()
+	case d.focus == paneList && !d.threePane():
+		d.openChange()
+	}
+}
+
+// setZoom shows only the content pane, or restores the panes around it.
+func (d *detailView) setZoom(on bool) {
+	d.zoom = on
+	d.layoutItems()
+	d.setFocus(paneContent)
+	d.paintFocus()
+	d.app.refresh()
+}
+
+// contentMouse scrolls the content pane sideways with a horizontal wheel.
+func (d *detailView) contentMouse(action tview.MouseAction, ev *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+	switch action {
+	case tview.MouseScrollLeft:
+		d.scrollSideways(-hStep)
+	case tview.MouseScrollRight:
+		d.scrollSideways(hStep)
+	default:
+		return action, ev
+	}
+	return tview.MouseConsumed, nil
+}
+
+const hStep = 4 // columns per horizontal scroll step
+
+// scrollSideways scrolls horizontally; that is only visible without wrapping,
+// so it switches wrapping off.
+func (d *detailView) scrollSideways(delta int) {
+	if d.wrap {
+		d.wrap = false
+		d.content.SetWrap(false)
+	}
+	row, col := d.content.GetScrollOffset()
+	d.content.ScrollTo(row, max(0, col+delta))
+}
+
 func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 	switch ev.Key() {
 	case tcell.KeyLeft:
+		if d.zoom {
+			d.scrollSideways(-hStep)
+			return nil
+		}
 		d.moveFocus(-1, false)
 		return nil
 	case tcell.KeyRight:
+		if d.zoom {
+			d.scrollSideways(hStep)
+			return nil
+		}
 		d.moveFocus(1, false)
 		return nil
 	case tcell.KeyTab:
@@ -567,11 +671,7 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		d.moveFocus(-1, true)
 		return nil
 	case tcell.KeyEnter:
-		if d.focus == paneList && d.mode == modePRs {
-			d.openPRCommits()
-		} else if d.focus == paneList && !d.threePane() {
-			d.openChange()
-		}
+		d.enter()
 		return nil
 	case tcell.KeyUp, tcell.KeyDown:
 		if ev.Modifiers()&tcell.ModShift != 0 {
@@ -605,6 +705,7 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case 'w':
 			d.wrap = !d.wrap
 			d.content.SetWrap(d.wrap)
+			d.app.Flash("wrap: " + map[bool]string{true: "on", false: "off"}[d.wrap])
 		case 'd':
 			d.showAlt[d.mode] = !d.showAlt[d.mode]
 			d.scheduleRight()

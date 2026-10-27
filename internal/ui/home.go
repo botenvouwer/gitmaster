@@ -27,6 +27,7 @@ func newHome(a *App) *homeView {
 	table.SetSelectedFunc(func(row, _ int) { h.open() })
 	table.SetInputCapture(h.keys)
 	h.filterBox = newFilterBox(a, table, h.rebuild)
+	h.activate = h.open
 	return h
 }
 

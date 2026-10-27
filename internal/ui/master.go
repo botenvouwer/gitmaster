@@ -106,6 +106,7 @@ func newMaster(a *App, project string) *masterView {
 	table.SetSelectedFunc(func(row, _ int) { m.open() })
 	table.SetInputCapture(m.keys)
 	m.filterBox = newFilterBox(a, table, m.rebuild)
+	m.activate = m.open
 	return m
 }
 
