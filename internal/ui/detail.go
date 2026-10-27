@@ -117,6 +117,7 @@ type detailView struct {
 	filter  *filterBox
 	files   *tview.Table
 	content *tview.TextView
+	wrap    bool // soft-wrap long lines in the content pane
 
 	order    []pane
 	focus    pane
@@ -201,7 +202,8 @@ func (d *detailView) build() {
 	selectOnScroll(d.files)
 	d.files.SetFocusFunc(func() { d.onFocus(paneFiles) })
 
-	d.content = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(false)
+	d.wrap = true
+	d.content = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true).SetWordWrap(false)
 	d.content.SetBorder(true).SetTitleAlign(tview.AlignLeft).SetTitleColor(colorTitle)
 	d.content.SetInputCapture(d.keys)
 	d.content.SetFocusFunc(func() { d.onFocus(paneContent) })
@@ -600,6 +602,9 @@ func (d *detailView) keys(ev *tcell.EventKey) *tcell.EventKey {
 		case '/':
 			d.setFocus(paneList)
 			d.filter.show(true)
+		case 'w':
+			d.wrap = !d.wrap
+			d.content.SetWrap(d.wrap)
 		case 'd':
 			d.showAlt[d.mode] = !d.showAlt[d.mode]
 			d.scheduleRight()

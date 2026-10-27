@@ -362,6 +362,7 @@ func (a *App) toggleHelp() {
 		{"pgup/pgdn", "page"},
 		{"g/G", "top / bottom"},
 		{"h/l", "scroll horizontally (content pane)"},
+		{"w", "wrap long lines (content pane)"},
 		{"mouse wheel", "scroll"},
 	})
 	write("General", []hotkey{
