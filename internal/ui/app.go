@@ -115,6 +115,9 @@ func New(dir, version string) *App {
 	if screen, err := tcell.NewScreen(); err == nil {
 		a.screen = screen // kept for the OSC 52 clipboard fallback
 		a.SetScreen(screen)
+		// SetScreen bypasses tview's own mouse setup, and EnableMouse(true)
+		// above is then a no-op, so enable it on the screen directly.
+		screen.EnableMouse()
 	}
 	return a
 }
